@@ -7,7 +7,6 @@ import helmet from "helmet";
 import morgan from "morgan";
 
 import userRoutes from "./routes/user.route.js";
-import tokenRoutes from "./routes/token.route.js";
 
 // Middleware
 dotenv.config();
@@ -61,10 +60,7 @@ requiredEnvVars.forEach((key) => {
 
 // Database Connection
 mongoose
-  .connect(process.env.MONGODB_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-  })
+  .connect(process.env.MONGODB_URI, {})
   .then(() => {
     console.log("Database Connected Successfully!");
     app.listen(process.env.PORT || 8080, () => {
@@ -78,7 +74,6 @@ mongoose
 
 // API Routes
 app.use("/api/user", userRoutes);
-app.use("/api/token", tokenRoutes);
 
 // 404 Error Handler
 app.use((req, res, next) => {

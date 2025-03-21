@@ -3,6 +3,7 @@ import ForgotPassword from "../models/forgotPassword.model.js";
 import Otp from "../models/otp.model.js";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
+import { generateToken } from "../utils/jwt.js";
 
 export const fetchUser = async (req, res) => {
   const userId = req.user;
@@ -25,121 +26,103 @@ export const fetchUser = async (req, res) => {
   }
 };
 
-export const userLogin = async (req, res) => {
-  const { email, password } = req.body;
-
+// **Manual Login**
+export const login = async (req, res) => {
   try {
-    if (!password || !email) {
-      return res.status(400).json({ message: "All fields are required" });
+    const { email, password } = req.body;
+    const user = await User.findOne({ email });
+    if (!user || !(await bcrypt.compare(password, user.password))) {
+      return res.status(401).json({ message: "Invalid credentials" });
     }
-
-    const emailRegex = /.+@.+\..+/;
-    if (!emailRegex.test(email)) {
-      return res.status(400).json({ message: "Invalid email format" });
-    }
-
-    const user = await User.findOne({ email: email.toLowerCase() });
-    if (!user) {
-      return res.status(404).json({ message: "Invalid Credentials" });
-    }
-
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-    if (!isPasswordValid) {
-      return res.status(404).json({ message: "Invalid Credentials" });
-    }
-
-    const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET);
-
-    const userResponse = {
-      ...user._doc,
-      password: undefined,
-    };
-
-    return res.status(200).json({ user: userResponse, token, role: "User" });
+    const token = generateToken(user);
+    res.json({ token, user });
   } catch (error) {
-    console.error("Error during User login:", error);
-    return res.status(500).json({ message: "Internal Server Error" });
+    res.status(500).json({ message: "Error logging in", error });
   }
 };
 
-export const userGoogleLogin = async (req, res) => {
-  const { email, secret } = req.body;
-
+// **Manual Registration**
+export const register = async (req, res) => {
   try {
-    if (!email || !secret) {
-      return res.status(400).json({ message: "Invalid Credentials" });
-    }
-
-    if (email.slice(0, 10).toLowerCase() !== secret) {
-      return res.status(400).json({ message: "Invalid Credentials" });
-    }
-
-    const user = await User.findOne({ email: email.toLowerCase() });
-
-    if (!user) {
-      return res.status(404).json({ message: "Invalid Credentials" });
-    }
-
-    const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET);
-
-    const userResponse = {
-      ...user._doc,
-      password: undefined,
-    };
-
-    return res.status(200).json({ user: userResponse, token, role: "User" });
-  } catch (err) {
-    console.log(err.message);
-    return res.status(500).json({ message: "Internal Server Error" });
-  }
-};
-
-export const userRegister = async (req, res) => {
-  const { username, password, phno, email } = req.body;
-
-  try {
-    if (!username || !password || !phno || !email) {
-      return res.status(400).json({ message: "All fields are required" });
-    }
-
-    const emailRegex = /.+@.+\..+/;
-    if (!emailRegex.test(email)) {
-      return res.status(400).json({ message: "Invalid email format" });
-    }
-
+    const { username, email, password, phoneNumber } = req.body;
     const existingUser = await User.findOne({ email });
-    if (existingUser) {
-      return res
-        .status(400)
-        .json({ message: "User with this email already exists" });
-    }
-
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
-
-    const newUser = await User.create({
-      username: username.toUpperCase(),
-      email: email.toLowerCase(),
-      phno,
-      password: hashedPassword,
-    });
-
-    const token = jwt.sign({ userId: newUser._id }, process.env.JWT_SECRET);
-
-    const userResponse = {
-      ...newUser._doc,
-      password: undefined,
-    };
-
-    return res.status(201).json({ user: userResponse, token, role: "User" });
+    if (existingUser)
+      return res.status(400).json({ message: "Email already exists" });
+    const newUser = new User({ username, email, password, phoneNumber });
+    await newUser.save();
+    res.status(201).json({ message: "User registered successfully" });
   } catch (error) {
-    if (error.name === "ValidationError") {
-      const errors = Object.values(error.errors).map((err) => err.message);
-      return res.status(400).json({ message: "Validation Error", errors });
-    }
+    res.status(500).json({ message: "Error registering user", error });
+  }
+};
 
-    console.error("Error during admin registration:", error);
-    return res.status(500).json({ message: "Internal Server Error" });
+// **Google Login/Signup**
+export const googleAuth = async (req, res) => {
+  try {
+    const { googleId, email, username } = req.body;
+    let user = await User.findOne({ googleId });
+    if (!user) {
+      user = new User({ googleId, email, username, emailVerified: true });
+      await user.save();
+    }
+    const token = generateToken(user);
+    res.json({ token, user });
+  } catch (error) {
+    res.status(500).json({ message: "Google authentication failed", error });
+  }
+};
+
+// **Telegram Login/Signup**
+export const telegramAuth = async (req, res) => {
+  try {
+    const { telegramId, username } = req.body;
+    let user = await User.findOne({ telegramId });
+    if (!user) {
+      user = new User({ telegramId, username });
+      await user.save();
+    }
+    const token = generateToken(user);
+    res.json({ token, user });
+  } catch (error) {
+    res.status(500).json({ message: "Telegram authentication failed", error });
+  }
+};
+
+// **X (Twitter) Login/Signup**
+export const xAuth = async (req, res) => {
+  try {
+    const { xId, username } = req.body;
+    let user = await User.findOne({ xId });
+    if (!user) {
+      user = new User({ xId, username });
+      await user.save();
+    }
+    const token = generateToken(user);
+    res.json({ token, user });
+  } catch (error) {
+    res.status(500).json({ message: "X authentication failed", error });
+  }
+};
+
+// **Instant Registration Function**
+export const instantReg = async (req, res) => {
+  try {
+    // Generate random username and password
+    const username = `user_${cryptoRandomString({
+      length: 8,
+      type: "alphanumeric",
+    })}`;
+    const password = cryptoRandomString({ length: 12, type: "alphanumeric" });
+    // Hash the password
+    const hashedPassword = await bcrypt.hash(password, 10);
+    // Create a new user
+    const newUser = new User({ username, password: hashedPassword });
+    await newUser.save();
+    // Generate JWT token
+    const token = generateToken(newUser);
+    res.json({ token, user: { username, password } }); // Return credentials
+  } catch (error) {
+    res.status(500).json({ message: "Instant registration failed", error });
   }
 };
 
@@ -186,6 +169,7 @@ export const updatePassword = async (req, res) => {
   }
 };
 
+// sending otp
 export const sendOtp = async (req, res) => {
   const { email } = req.body;
 
@@ -239,6 +223,7 @@ export const sendOtp = async (req, res) => {
   }
 };
 
+// verify otp
 export const verifyOtp = async (req, res) => {
   const { email, otp } = req.body;
 
@@ -266,6 +251,7 @@ export const verifyOtp = async (req, res) => {
   }
 };
 
+// forgot password
 export const postForgotPassword = async (req, res) => {
   const { email } = req.body;
 
@@ -322,6 +308,7 @@ export const postForgotPassword = async (req, res) => {
   }
 };
 
+// verify forgotpassword
 export const verifyForgotPassword = async (req, res) => {
   const { email, otp } = req.body;
 
@@ -360,7 +347,7 @@ export const verifyForgotPassword = async (req, res) => {
   }
 };
 
-export const resPassword = async (req, res) => {
+export const restPassword = async (req, res) => {
   const { email, password } = req.body;
 
   try {

@@ -1,40 +1,32 @@
 import mongoose from "mongoose";
+import bcrypt from "bcryptjs";
 
 const UserSchema = new mongoose.Schema(
   {
-    email: {
+    username: { type: String, required: true, unique: true, trim: true },
+    email: { type: String, unique: true, sparse: true, trim: true },
+    emailVerified: { type: Boolean, default: false },
+    password: {
       type: String,
-      unique: true,
-      required: [true, "Email is required"],
-      match: [/.+@.+\..+/, "Please enter a valid email address"],
+      required: function () {
+        return !this.googleId && !this.telegramId && !this.xId;
+      },
     },
-    username: {
-      type: String,
-      required: [true, "Username is required"],
-    },
-    password: { type: String, required: [true, "Password is required"] },
-    phno: {
-      type: String,
-      required: [true, "Phone number is required"],
-      match: [/^\d{10}$/, "Phone number must be 10 digits"],
-    },
-    tokens: {
-      type: [{ type: mongoose.Schema.ObjectId, ref: "Token" }],
-      default: [],
-    },
-    followers: {
-      type: [{ type: mongoose.Schema.ObjectId, ref: "User" }],
-      default: [],
-    },
-    following: {
-      type: [{ type: mongoose.Schema.ObjectId, ref: "User" }],
-      default: [],
-    },
+    phoneNumber: { type: String, unique: true, sparse: true },
+    phoneNumberVerified: { type: Boolean, default: false },
+    googleId: { type: String, unique: true, sparse: true },
+    telegramId: { type: String, unique: true, sparse: true },
+    xId: { type: String, unique: true, sparse: true },
+    continuedGames: [{ type: mongoose.Schema.Types.ObjectId, ref: "Game" }],
+    continuedSports: [{ type: mongoose.Schema.Types.ObjectId, ref: "Sport" }],
   },
-  {
-    timestamps: true,
-  }
+  { timestamps: true }
 );
-
-const User = mongoose.model("User", UserSchema);
-export default User;
+// Hash password before saving
+UserSchema.pre("save", async function (next) {
+  if (!this.isModified("password")) return next();
+  const salt = await bcrypt.genSalt(10);
+  this.password = await bcrypt.hash(this.password, salt);
+  next();
+});
+export default mongoose.model("User", UserSchema);
