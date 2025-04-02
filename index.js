@@ -7,7 +7,6 @@ import helmet from "helmet";
 import morgan from "morgan";
 
 import userRoutes from "./routes/user.route.js";
-import tokenRoutes from "./routes/token.route.js";
 
 // Middleware
 dotenv.config();
@@ -27,7 +26,7 @@ app.use(
         scriptSrc: ["'self'"],
         styleSrc: ["'self'"],
         imgSrc: ["'self'", "data:"],
-        connectSrc: ["'self'", process.env.BACKEND_URL],
+        connectSrc: ["'self'", "*"],
       },
     },
   })
@@ -78,7 +77,6 @@ mongoose
 
 // API Routes
 app.use("/api/user", userRoutes);
-app.use("/api/token", tokenRoutes);
 
 // 404 Error Handler
 app.use((req, res, next) => {

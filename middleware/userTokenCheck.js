@@ -1,6 +1,6 @@
 import jwt from "jsonwebtoken";
 
-export const verifyUserToken = async (req, res, next) => {
+export const verifyToken = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader) {
@@ -17,7 +17,7 @@ export const verifyUserToken = async (req, res, next) => {
       return res.status(401).json({ message: "Invalid token" });
     }
 
-    req.user = decodedToken.userId;
+    req.userId = decodedToken.id;
     next();
   } catch (error) {
     console.log(error.message);
