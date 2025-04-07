@@ -47,7 +47,14 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(cors());
+const corsOptions = {
+  origin: [process.env.CLIENT_ORIGIN_1] || "http://localhost:3000",
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true,
+};
+
+app.use(cors(corsOptions));
 
 // Environment Validation
 const requiredEnvVars = ["MONGODB_URI"];
