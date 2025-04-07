@@ -63,7 +63,10 @@ export const login = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    const user = await User.findOne({ email });
+    const user = await User.findOne({
+      $or: [{ email }, { username: email }],
+    });
+
     if (!user || !(await bcrypt.compare(password, user.password))) {
       return res.status(401).json({ message: "Invalid credentials" });
     }
@@ -75,24 +78,39 @@ export const login = async (req, res) => {
   }
 };
 
+const generateUsername = async () => {
+  let username;
+  let isUnique = false;
+
+  while (!isUnique) {
+    const randomStr = Math.random().toString(36).substring(2, 10);
+    username = randomStr;
+
+    const existingUser = await User.findOne({ username });
+    if (!existingUser) {
+      isUnique = true;
+    }
+  }
+
+  return username;
+};
+
 export const googleAuth = async (req, res) => {
   try {
-    const { googleId, email, username } = req.body;
+    const { googleId, email } = req.body;
     let user = await User.findOne({ googleId });
 
     if (!user) {
-      if (!username) {
-        return res.status(400).json({ message: "Username is required" });
-      }
-
-      const existingUser = await User.findOne({ username });
-      if (existingUser) {
-        return res.status(400).json({ message: "Username already exists" });
-      }
-
-      user = new User({ googleId, email, username, emailVerified: true });
+      const username = await generateUsername();
+      user = new User({
+        googleId,
+        email,
+        username,
+        emailVerified: true,
+      });
       await user.save();
     }
+
     const token = generateToken(user);
     res.json({ token, user: sanitizeUser(user) });
   } catch (error) {
@@ -102,18 +120,15 @@ export const googleAuth = async (req, res) => {
 
 export const telegramAuth = async (req, res) => {
   try {
-    const { telegramId, username } = req.body;
+    const { telegramId } = req.body;
     let user = await User.findOne({ telegramId });
-    if (!user) {
-      if (!username) {
-        return res.status(400).json({ message: "Username is required" });
-      }
 
-      const existingUser = await User.findOne({ username });
-      if (existingUser) {
-        return res.status(400).json({ message: "Username already exists" });
-      }
-      user = new User({ telegramId, username });
+    if (!user) {
+      const username = await generateUsername();
+      user = new User({
+        telegramId,
+        username,
+      });
       await user.save();
     }
 
@@ -127,18 +142,15 @@ export const telegramAuth = async (req, res) => {
 // **X (Twitter) Login/Signup**
 export const xAuth = async (req, res) => {
   try {
-    const { xId, username } = req.body;
+    const { xId } = req.body;
     let user = await User.findOne({ xId });
-    if (!user) {
-      if (!username) {
-        return res.status(400).json({ message: "Username is required" });
-      }
 
-      const existingUser = await User.findOne({ username });
-      if (existingUser) {
-        return res.status(400).json({ message: "Username already exists" });
-      }
-      user = new User({ xId, username });
+    if (!user) {
+      const username = await generateUsername();
+      user = new User({
+        xId,
+        username,
+      });
       await user.save();
     }
 
@@ -146,6 +158,58 @@ export const xAuth = async (req, res) => {
     res.json({ token, user: sanitizeUser(user) });
   } catch (error) {
     res.status(500).json({ message: "X authentication failed", error });
+  }
+};
+
+// instant registration
+export const instantRegister = async (req, res) => {
+  try {
+    const generateUsername = async () => {
+      let username;
+      let isUnique = false;
+
+      // Generate a completely random username
+      while (!isUnique) {
+        const randomStr = Math.random().toString(36).substring(2, 10); // Random string from numbers and letters
+        username = randomStr;
+
+        // Check if the username already exists
+        const existingUser = await User.findOne({ username });
+        if (!existingUser) {
+          isUnique = true;
+        }
+      }
+
+      return username;
+    };
+
+    const generatePassword = () => {
+      const length = 12;
+      const charset =
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*";
+      let password = "";
+      for (let i = 0; i < length; i++) {
+        const randomIndex = Math.floor(Math.random() * charset.length);
+        password += charset[randomIndex];
+      }
+      return password;
+    };
+
+    const username = await generateUsername();
+    const password = generatePassword();
+
+    const newUser = new User({ username, password });
+    await newUser.save();
+
+    const token = generateToken(newUser);
+    res.status(201).json({
+      message: "User registered successfully",
+      token,
+      user: sanitizeUser(newUser),
+      credentials: { username, password },
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Error in instant registration", error });
   }
 };
 
