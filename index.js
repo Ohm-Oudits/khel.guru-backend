@@ -7,6 +7,8 @@ import helmet from "helmet";
 import morgan from "morgan";
 
 import userRoutes from "./routes/user.route.js";
+import gameRoutes from "./routes/game.route.js";
+import sportRoutes from "./routes/sport.route.js";
 
 // Middleware
 dotenv.config();
@@ -48,7 +50,8 @@ app.use((req, res, next) => {
 });
 
 const corsOptions = {
-  origin: [process.env.CLIENT_ORIGIN_1] || "http://localhost:3000",
+  origin: "*",
+  // origin: [process.env.CLIENT_ORIGIN_1] || "http://localhost:3000",
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
   allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true,
@@ -84,6 +87,8 @@ mongoose
 
 // API Routes
 app.use("/api/user", userRoutes);
+app.use("/api/game", gameRoutes);
+app.use("/api/sport", sportRoutes);
 
 // 404 Error Handler
 app.use((req, res, next) => {

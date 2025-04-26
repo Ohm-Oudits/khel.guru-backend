@@ -83,7 +83,7 @@ const generateUsername = async () => {
   let isUnique = false;
 
   while (!isUnique) {
-    const randomStr = Math.random().toString(36).substring(2, 10);
+    const randomStr = Math.random().toString(36).substring(2, 12);
     username = randomStr;
 
     const existingUser = await User.findOne({ username });
