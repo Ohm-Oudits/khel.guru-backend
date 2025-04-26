@@ -3,6 +3,7 @@ import {
   createGame,
   deleteGame,
   findGame,
+  findGames,
   updateGame,
 } from "../controllers/game.controllers.js";
 
@@ -12,5 +13,6 @@ router.post("/", createGame);
 router.put("/update/:id", updateGame);
 router.delete("/:id", deleteGame);
 router.get("/", findGame);
+router.get("/all", findGames);
 
 export default router;

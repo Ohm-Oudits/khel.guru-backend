@@ -78,3 +78,13 @@ export const findSport = async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 };
+
+export const findSports = async (req, res) => {
+  try {
+    const sports = await Sport.find();
+
+    return res.json({ sports });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};

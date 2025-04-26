@@ -79,7 +79,17 @@ export const findGame = async (req, res) => {
     const game = await Game.findOne({ name });
     if (!game) return res.status(404).json({ message: "Game not found" });
 
-    res.json(game);
+    res.json({ game });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+export const findGames = async (req, res) => {
+  try {
+    const games = await Game.find();
+
+    return res.json({ games });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
