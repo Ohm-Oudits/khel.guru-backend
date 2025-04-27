@@ -28,6 +28,7 @@ const UserSchema = new mongoose.Schema(
     resetPasswordOTPExpiry: { type: Date },
     phoneOTP: { type: String },
     phoneOTPExpiry: { type: Date },
+    socketId: { type: String, default: null },
   },
   { timestamps: true }
 );

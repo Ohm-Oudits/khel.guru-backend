@@ -26,7 +26,6 @@ const generateToken = (user) => {
   });
 };
 
-// Sanitize user data before sending to frontend
 const sanitizeUser = (user) => {
   const sanitizedUser = user.toObject();
   delete sanitizedUser.password;

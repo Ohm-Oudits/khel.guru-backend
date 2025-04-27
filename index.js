@@ -5,12 +5,15 @@ import cors from "cors";
 import dotenv from "dotenv";
 import helmet from "helmet";
 import morgan from "morgan";
+import http from "http";
+import { setupSocket } from "./socket.js";
 
 import userRoutes from "./routes/user.route.js";
 import gameRoutes from "./routes/game.route.js";
 import sportRoutes from "./routes/sport.route.js";
 
-// Middleware
+import setupParachuteSocket from "./socket/modules/parachute/parachute.socket.js";
+
 dotenv.config();
 const app = express();
 app.use(express.json());
@@ -18,7 +21,6 @@ app.use(bodyParser.json({ limit: "1mb" }));
 app.use(bodyParser.urlencoded({ limit: "1mb", extended: true }));
 app.use(morgan("combined"));
 
-// Security Headers
 app.use(
   helmet({
     contentSecurityPolicy: {
@@ -51,7 +53,6 @@ app.use((req, res, next) => {
 
 const corsOptions = {
   origin: "*",
-  // origin: [process.env.CLIENT_ORIGIN_1] || "http://localhost:3000",
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
   allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true,
@@ -59,8 +60,7 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 
-// Environment Validation
-const requiredEnvVars = ["MONGODB_URI"];
+const requiredEnvVars = ["MONGODB_URI", "JWT_SECRET"];
 requiredEnvVars.forEach((key) => {
   if (!process.env[key]) {
     console.error(`Environment variable ${key} is missing!`);
@@ -68,7 +68,10 @@ requiredEnvVars.forEach((key) => {
   }
 });
 
-// Database Connection
+const server = http.createServer(app);
+setupSocket(server);
+setupParachuteSocket();
+
 mongoose
   .connect(process.env.MONGODB_URI, {
     useNewUrlParser: true,
@@ -76,7 +79,7 @@ mongoose
   })
   .then(() => {
     console.log("Database Connected Successfully!");
-    app.listen(process.env.PORT || 8080, () => {
+    server.listen(process.env.PORT || 8080, () => {
       console.log(`Server running on port ${process.env.PORT || 8080} 🔥`);
     });
   })
@@ -85,17 +88,14 @@ mongoose
     process.exit(1);
   });
 
-// API Routes
 app.use("/api/user", userRoutes);
 app.use("/api/game", gameRoutes);
 app.use("/api/sport", sportRoutes);
 
-// 404 Error Handler
 app.use((req, res, next) => {
   res.status(404).json({ message: "API endpoint not found" });
 });
 
-// Global Error Handler
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).json({ message: "Something went wrong!" });
