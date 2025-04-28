@@ -12,7 +12,23 @@ import userRoutes from "./routes/user.route.js";
 import gameRoutes from "./routes/game.route.js";
 import sportRoutes from "./routes/sport.route.js";
 
+import setupBaccaratSocket from "./socket/modules/baccarat/baccarat.socket.js";
+import setupBlackjackSocket from "./socket/modules/blackjack/blackjack.socket.js";
+import setupCrashSocket from "./socket/modules/crash/crash.socket.js";
+import setupDiceSocket from "./socket/modules/dice/dice.socket.js";
+import setupHiloSocket from "./socket/modules/hilo/hilo.socket.js";
+import setupKenoSocket from "./socket/modules/keno/keno.socket.js";
+import setupLimboSocket from "./socket/modules/limbo/limbo.socket.js";
+import setupMinesSocket from "./socket/modules/mines/mines.socket.js";
 import setupParachuteSocket from "./socket/modules/parachute/parachute.socket.js";
+import setupPlinkoSocket from "./socket/modules/plinko/plinko.socket.js";
+import setupPumpSocket from "./socket/modules/pump/pump.socket.js";
+import setupRouletteSocket from "./socket/modules/roulette/roulette.socket.js";
+import setupScratchSocket from "./socket/modules/scratch/scratch.socket.js";
+import setupSlideSocket from "./socket/modules/slide/slide.socket.js";
+import setupTowerSocket from "./socket/modules/tower/tower.socket.js";
+import setupTwistSocket from "./socket/modules/twist/twist.socket.js";
+import setupWheelSocket from "./socket/modules/wheel/wheel.socket.js";
 
 dotenv.config();
 const app = express();
@@ -68,10 +84,6 @@ requiredEnvVars.forEach((key) => {
   }
 });
 
-const server = http.createServer(app);
-setupSocket(server);
-setupParachuteSocket();
-
 mongoose
   .connect(process.env.MONGODB_URI, {
     useNewUrlParser: true,
@@ -100,3 +112,25 @@ app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).json({ message: "Something went wrong!" });
 });
+
+// Sockets
+const server = http.createServer(app);
+setupSocket(server);
+
+setupBaccaratSocket();
+setupBlackjackSocket();
+setupCrashSocket();
+setupDiceSocket();
+setupHiloSocket();
+setupKenoSocket();
+setupLimboSocket();
+setupMinesSocket();
+setupParachuteSocket();
+setupPlinkoSocket();
+setupPumpSocket();
+setupRouletteSocket();
+setupScratchSocket();
+setupSlideSocket();
+setupTowerSocket();
+setupTwistSocket();
+setupWheelSocket();
