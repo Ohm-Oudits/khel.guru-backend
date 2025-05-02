@@ -6,7 +6,7 @@ import dotenv from "dotenv";
 import helmet from "helmet";
 import morgan from "morgan";
 import http from "http";
-import { setupSocket } from "./socket.js";
+import { setupSocket } from "./socket/socket.js";
 
 import userRoutes from "./routes/user.route.js";
 import gameRoutes from "./routes/game.route.js";

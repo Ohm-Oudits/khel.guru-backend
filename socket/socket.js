@@ -12,17 +12,29 @@ const setupSocket = (httpServer) => {
     },
   });
 
-  io.use(async (socket, next) => {
-    const token = socket.handshake.auth.token;
-    if (!token) {
-      return next(new Error("Authentication required"));
-    }
+  console.log("Socket server initialized");
 
+  io.use(async (socket, next) => {
     try {
+      const token = socket.handshake.auth.token;
+
+      if (!token) {
+        console.log("Socket connection attempt without token");
+        return next(new Error("Authentication required"));
+      }
+
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+      if (!decoded || !decoded.id) {
+        console.log("Invalid token structure");
+        return next(new Error("Invalid token"));
+      }
+
       socket.data.userId = decoded.id;
+      console.log(`Socket authentication successful for user: ${decoded.id}`);
       next();
     } catch (err) {
+      console.log("Socket authentication failed:", err.message);
       next(new Error("Invalid token"));
     }
   });
@@ -55,6 +67,7 @@ const setupSocket = (httpServer) => {
     }
   });
 
+  console.log("Socket is ready to use: link");
   return io;
 };
 
