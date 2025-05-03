@@ -52,10 +52,6 @@ const GameSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
-    gamesPlayedThisWeek: {
-      type: Number,
-      default: 0,
-    },
   },
   { timestamps: true }
 );
