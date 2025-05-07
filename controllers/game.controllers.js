@@ -1,4 +1,5 @@
 import Game from "../models/game.model.js";
+import User from "../models/user.model.js";
 
 export const createGame = async (req, res) => {
   const { name, creator, img, exclusive, isNew, description, hotkeys, info } =
@@ -92,5 +93,48 @@ export const findGames = async (req, res) => {
     return res.json({ games });
   } catch (err) {
     res.status(500).json({ message: err.message });
+  }
+};
+
+export const getPopularGames = async (req, res) => {
+  try {
+    const popularGames = await Game.find(
+      {},
+      {
+        _id: 1,
+        name: 1,
+        creator: 1,
+        img: 1,
+        exclusive: 1,
+        isNew: 1,
+        gamesPlayed: 1,
+      }
+    )
+      .sort({ gamesPlayed: -1 })
+      .limit(10);
+
+    return res.status(200).json(popularGames);
+  } catch (error) {
+    console.log(error.message);
+    return res.status(500).json({ message: "Internal Server Error" });
+  }
+};
+
+export const getContinuedGames = async (req, res) => {
+  const userId = req.userId;
+  try {
+    const user = await User.findById(userId)
+      .populate(
+        "continuedGames",
+        "name creator id img exclusive isNew gamesPlayed"
+      )
+      .limit(10);
+
+    console.log(user);
+
+    return res.status(200).json({ games: user.continuedGames });
+  } catch (error) {
+    console.log(error.message);
+    return res.status(500).json({ message: "Internal Server Error" });
   }
 };
