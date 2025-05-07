@@ -43,7 +43,7 @@ const setupMinesSocket = () => {
     });
 
     socket.on("disconnect", () => {
-      console.log(`❌ User ${userId} disconnected from Parachute`);
+      console.log(`❌ User ${userId} disconnected from Mines`);
     });
   });
 };

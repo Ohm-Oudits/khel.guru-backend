@@ -43,7 +43,7 @@ const setupHiloSocket = () => {
     });
 
     socket.on("disconnect", () => {
-      console.log(`❌ User ${userId} disconnected from Parachute`);
+      console.log(`❌ User ${userId} disconnected from Hilo`);
     });
   });
 };
