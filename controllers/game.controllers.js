@@ -130,8 +130,6 @@ export const getContinuedGames = async (req, res) => {
       )
       .limit(10);
 
-    console.log(user);
-
     return res.status(200).json({ games: user.continuedGames });
   } catch (error) {
     console.log(error.message);

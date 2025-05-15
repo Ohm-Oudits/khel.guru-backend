@@ -26,6 +26,10 @@ const generateToken = (user) => {
   });
 };
 
+const rememberMeToken = (user) => {
+  return jwt.sign({ id: user._id }, process.env.JWT_SECRET);
+};
+
 const sanitizeUser = (user) => {
   const sanitizedUser = user.toObject();
   delete sanitizedUser.password;
@@ -61,6 +65,7 @@ export const register = async (req, res) => {
 export const login = async (req, res) => {
   try {
     const { email, password } = req.body;
+    const rememberMe = req.body.rememberMe || false;
 
     const user = await User.findOne({
       $or: [{ email }, { username: email }],
@@ -70,7 +75,13 @@ export const login = async (req, res) => {
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
-    const token = generateToken(user);
+    let token;
+    if (rememberMe) {
+      token = rememberMeToken(user);
+    } else {
+      token = generateToken(user);
+    }
+
     res.json({ token, user: sanitizeUser(user) });
   } catch (error) {
     res.status(500).json({ message: "Error logging in", error });

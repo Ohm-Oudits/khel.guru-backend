@@ -34,16 +34,64 @@ const setupTowerSocket = () => {
 
     socket.join(`tower:${userId}`);
 
+    // Get initial game state
+    socket.on("get_game_state", async () => {
+      try {
+        const gameState = await service.getGameState(userId);
+        socket.emit("game_state", gameState);
+      } catch (err) {
+        socket.emit("error", { message: err.message });
+      }
+    });
+
+    // Start new game
     socket.on("add_game", async (data) => {
       try {
-        await service.join(userId);
+        const { betAmount, difficulty } = data;
+        const gameState = await service.startGame(
+          userId,
+          betAmount,
+          difficulty
+        );
+        socket.emit("game_state", gameState);
+      } catch (err) {
+        socket.emit("error", { message: err.message });
+      }
+    });
+
+    // Reveal box
+    socket.on("reveal", async (data) => {
+      try {
+        const { index } = data;
+        const gameState = await service.revealBox(userId, index);
+        socket.emit("game_state", gameState);
+      } catch (err) {
+        socket.emit("error", { message: err.message });
+      }
+    });
+
+    // Checkout game
+    socket.on("checkout", async () => {
+      try {
+        const gameState = await service.checkout(userId);
+        socket.emit("game_state", gameState);
+      } catch (err) {
+        socket.emit("error", { message: err.message });
+      }
+    });
+
+    // Continue game
+    socket.on("continue_game", async () => {
+      try {
+        const gameState = await service.continueGame(userId);
+        socket.emit("game_state", gameState);
       } catch (err) {
         socket.emit("error", { message: err.message });
       }
     });
 
     socket.on("disconnect", () => {
-      console.log(`❌ User ${userId} disconnected from Twist`);
+      console.log(`❌ User ${userId} disconnected from Tower`);
     });
   });
 };
