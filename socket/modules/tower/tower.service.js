@@ -31,6 +31,22 @@ const service = {
         throw new Error("User not found");
       }
 
+      // Check for existing game
+      const existingGame = await Tower.findOne({ userId });
+      if (
+        existingGame &&
+        !existingGame.gameOver &&
+        !existingGame.gameWon &&
+        !existingGame.checkedOut
+      ) {
+        return {
+          hasActiveGame: true,
+          existingGame: true,
+          message: "You have an active game. Please continue or checkout.",
+          currentGame: existingGame,
+        };
+      }
+
       // Generate grid based on difficulty
       const grid = this.generateGrid(difficulty);
 
@@ -48,6 +64,7 @@ const service = {
           checkedOut: false,
           currentRow: grid.length - 1, // Start from bottom row
           difficulty,
+          selectedBoxes: [], // Add selectedBoxes array to track revealed boxes
         },
         { upsert: true, new: true }
       );
@@ -55,6 +72,7 @@ const service = {
       return {
         ...tower.toObject(),
         hasActiveGame: true,
+        existingGame: false,
         currentRow: tower.currentRow,
         grid: tower.grid,
       };
@@ -79,10 +97,26 @@ const service = {
         throw new Error("Invalid row selection");
       }
 
-      // Update grid
+      // Initialize selectedBoxes if it doesn't exist
+      if (!tower.selectedBoxes) {
+        tower.selectedBoxes = [];
+      }
+
+      // Check if box is already revealed
+      const isAlreadyRevealed = tower.selectedBoxes.some(
+        (box) => box.row === row && box.col === col
+      );
+      if (isAlreadyRevealed) {
+        throw new Error("Box already revealed");
+      }
+
+      // Update grid and track revealed box
       const grid = [...tower.grid];
       grid[row][col].revealed = true;
       const isCorrect = tower.grid[row][col].isCorrect;
+
+      // Add to selected boxes
+      tower.selectedBoxes.push({ row, col, isCorrect });
 
       // Check if game is over
       if (!isCorrect) {
@@ -112,6 +146,9 @@ const service = {
         profit: tower.profit,
         loss: tower.loss,
         grid: tower.grid,
+        row,
+        col,
+        selectedBoxes: tower.selectedBoxes,
       };
     } catch (error) {
       throw new Error(error.message || "Failed to reveal box");
@@ -129,24 +166,40 @@ const service = {
         // Calculate profit based on current progress
         const multiplier = this.getMultiplier(tower.difficulty);
         const progress = tower.grid.length - tower.currentRow - 1;
-        const profit =
+        const calculatedProfit =
           tower.betAmount * (multiplier * (progress / tower.grid.length));
 
-        tower.profit = profit;
+        // Ensure profit is a valid number
+        tower.profit = isNaN(calculatedProfit) ? 0 : calculatedProfit;
         tower.checkedOut = true;
 
         // Reveal all boxes when checking out
         this.revealAllBoxes(tower.grid);
       }
 
+      // Ensure all required fields are present
+      const checkoutData = {
+        userId: tower.userId,
+        grid: tower.grid,
+        betAmount: tower.betAmount,
+        gameOver: tower.gameOver,
+        gameWon: tower.gameWon,
+        profit: tower.profit,
+        loss: tower.loss,
+        checkedOut: true,
+        currentRow: tower.currentRow,
+        difficulty: tower.difficulty,
+        selectedBoxes: tower.selectedBoxes || [],
+      };
+
       // Save the final state before deleting
-      await tower.save();
+      await Tower.findOneAndUpdate({ userId }, checkoutData, { new: true });
 
       // Delete the tower entry
       await Tower.deleteOne({ userId });
 
       return {
-        ...tower.toObject(),
+        ...checkoutData,
         checkedOut: true,
         grid: tower.grid,
         profit: tower.profit,
@@ -252,6 +305,30 @@ const service = {
     const row = Math.floor(index / 4); // Assuming 4 columns
     const col = index % 4;
     return { row, col };
+  },
+
+  async continueGame(userId) {
+    try {
+      const tower = await Tower.findOne({ userId });
+      if (!tower) {
+        throw new Error("No active game found");
+      }
+
+      if (tower.gameOver || tower.gameWon || tower.checkedOut) {
+        throw new Error("Game is already over");
+      }
+
+      return {
+        ...tower.toObject(),
+        hasActiveGame: true,
+        existingGame: false,
+        currentRow: tower.currentRow,
+        grid: tower.grid,
+        selectedBoxes: tower.selectedBoxes || [],
+      };
+    } catch (error) {
+      throw new Error(error.message || "Failed to continue game");
+    }
   },
 };
 

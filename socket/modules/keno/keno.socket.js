@@ -34,11 +34,47 @@ const setupKenoSocket = () => {
 
     socket.join(`keno:${userId}`);
 
-    socket.on("add_game", async (data) => {
+    socket.on("add_game", async ({ checkedBoxes, bet, risk }) => {
+      console.log(`Received add_game from user ${userId}:`, {
+        checkedBoxes,
+        bet,
+        risk,
+      });
       try {
-        await service.join(userId);
+        if (
+          !Array.isArray(checkedBoxes) ||
+          checkedBoxes.length < 1 ||
+          checkedBoxes.length > 10 ||
+          checkedBoxes.some(
+            (num) => !Number.isInteger(num) || num < 0 || num > 39
+          )
+        ) {
+          console.log("Invalid checkedBoxes:", checkedBoxes);
+          return socket.emit("error", { message: "Invalid Selected Numbers" });
+        }
+
+        if (
+          typeof bet !== "string" ||
+          isNaN(parseFloat(bet)) ||
+          parseFloat(bet) < 0.000001
+        ) {
+          console.log("Invalid bet value:", bet, "Parsed:", parseFloat(bet));
+          return socket.emit("error", {
+            message: "Bet amount must be at least 0.000001",
+          });
+        }
+
+        const result = await service.playGame(userId, checkedBoxes, bet, risk);
+        console.log(`Emitting game_result to user ${userId}:`, result);
+        socket.emit("game_result", result);
       } catch (err) {
-        socket.emit("error", { message: err.message });
+        console.error(
+          `Error processing add_game for user ${userId}:`,
+          err.message
+        );
+        socket.emit("error", {
+          message: err.message || "Failed to process game",
+        });
       }
     });
 

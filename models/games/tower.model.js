@@ -16,6 +16,7 @@ const towerSchema = new mongoose.Schema(
     checkedOut: { type: Boolean, default: false },
     currentRow: { type: Number, required: true },
     difficulty: { type: String, required: true },
+    selectedBoxes: { type: Array, default: [] },
   },
   {
     timestamps: true,

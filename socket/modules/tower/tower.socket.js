@@ -84,7 +84,15 @@ const setupTowerSocket = () => {
     socket.on("continue_game", async () => {
       try {
         const gameState = await service.continueGame(userId);
-        socket.emit("game_state", gameState);
+        if (gameState.error) {
+          socket.emit("error", { message: gameState.error });
+          return;
+        }
+        socket.emit("game_state", {
+          ...gameState,
+          hasActiveGame: true,
+          existingGame: false,
+        });
       } catch (err) {
         socket.emit("error", { message: err.message });
       }
