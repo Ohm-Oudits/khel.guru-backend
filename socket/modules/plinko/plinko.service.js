@@ -32,11 +32,42 @@ const service = {
     }
   },
 
-  async result(data) {
+  async result(data, userId) {
     try {
-      console.log(data);
+      const { bin, payout, betAmount } = data;
+
+      const user = await User.findById(userId);
+      if (!user) {
+        return { error: "User not found" };
+      }
+
+      // Check if user has enough balance
+      if (user.balance < betAmount) {
+        return { error: "Insufficient balance" };
+      }
+
+      // Deduct bet amount
+      user.balance -= betAmount;
+
+      // Add payout if won
+      if (payout > 0) {
+        user.balance += payout;
+      }
+
+      await user.save();
+
+      return {
+        success: true,
+        data: {
+          balance: user.balance,
+          payout,
+          bin,
+          multiplier: payout / betAmount,
+        },
+      };
     } catch (error) {
-      return { error: "An error occurred while joining the game" };
+      console.error("Result processing error:", error);
+      return { error: "An error occurred while processing the result" };
     }
   },
 };

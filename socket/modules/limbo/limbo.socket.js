@@ -34,16 +34,51 @@ const setupLimboSocket = () => {
 
     socket.join(`limbo:${userId}`);
 
-    socket.on("add_game", async (data) => {
+    // Join game
+    socket.on("join_game", async () => {
       try {
-        await service.join(userId);
+        const result = await service.join(userId);
+        if (result.error) {
+          socket.emit("error", { message: result.error });
+        } else {
+          socket.emit("game_joined");
+        }
+      } catch (err) {
+        socket.emit("error", { message: err.message });
+      }
+    });
+
+    // Place bet
+    socket.on("place_bet", async (data) => {
+      try {
+        const { betAmount, targetMultiplier } = data;
+
+        if (!betAmount || !targetMultiplier) {
+          socket.emit("error", { message: "Missing bet parameters" });
+          return;
+        }
+
+        const result = await service.placeBet(
+          userId,
+          betAmount,
+          targetMultiplier
+        );
+
+        if (result.error) {
+          socket.emit("error", { message: result.error });
+        } else {
+          // Emit to specific user room
+          limboNamespace
+            .to(`limbo:${userId}`)
+            .emit("bet_result", result.result);
+        }
       } catch (err) {
         socket.emit("error", { message: err.message });
       }
     });
 
     socket.on("disconnect", () => {
-      console.log(`❌ User ${userId} disconnected from Parachute`);
+      console.log(`❌ User ${userId} disconnected from Limbo`);
     });
   });
 };

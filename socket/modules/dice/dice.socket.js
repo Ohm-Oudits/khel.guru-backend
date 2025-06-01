@@ -34,16 +34,61 @@ const setupDiceSocket = () => {
 
     socket.join(`dice:${userId}`);
 
-    socket.on("add_game", async (data) => {
+    // Join game
+    socket.on("join_game", async () => {
       try {
-        await service.join(userId);
+        const result = await service.join(userId);
+        if (result.error) {
+          socket.emit("error", { message: result.error });
+        } else {
+          socket.emit("game_joined");
+        }
       } catch (err) {
         socket.emit("error", { message: err.message });
       }
     });
 
+    // Roll dice
+    socket.on("roll_dice", async (data) => {
+      try {
+        console.log("roll");
+        const { betAmount, prediction, rollUnder } = data;
+
+        if (!betAmount || !prediction || typeof rollUnder === "undefined") {
+          socket.emit("error", { message: "Missing required parameters" });
+          return;
+        }
+
+        const result = await service.rollDice(
+          userId,
+          betAmount,
+          prediction,
+          rollUnder
+        );
+        if (result.error) {
+          socket.emit("error", { message: result.error });
+          return;
+        }
+
+        // Emit to specific user room
+        diceNamespace.to(`dice:${userId}`).emit("dice_result", result.result);
+
+        diceNamespace.emit("dice_update", {
+          userId,
+          diceRoll: result.result.diceRoll,
+          prediction: result.result.prediction,
+          isWin: result.result.isWin,
+          multiplier: result.result.multiplier,
+          timestamp: new Date(),
+        });
+      } catch (err) {
+        console.error("Error in roll_dice:", err);
+        socket.emit("error", { message: err.message });
+      }
+    });
+
     socket.on("disconnect", () => {
-      console.log(`❌ User ${userId} disconnected from Parachute`);
+      console.log(`❌ User ${userId} disconnected from Dice`);
     });
   });
 };

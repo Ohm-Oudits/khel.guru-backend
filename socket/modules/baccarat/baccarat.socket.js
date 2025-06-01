@@ -34,16 +34,127 @@ const setupBaccaratSocket = () => {
 
     socket.join(`baccarat:${userId}`);
 
-    socket.on("add_game", async (data) => {
+    let currentGameId = null;
+
+    socket.on("join_game", async () => {
       try {
-        await service.join(userId);
+        const result = await service.join(userId);
+        if (result.success) {
+          currentGameId = result.gameId;
+          socket.join(`game:${currentGameId}`);
+
+          socket.emit("game_joined", result);
+
+          baccaratNamespace
+            .to(`game:${currentGameId}`)
+            .emit("game_state_update", {
+              type: "player_joined",
+              gameId: currentGameId,
+              status: result.status,
+            });
+        }
       } catch (err) {
         socket.emit("error", { message: err.message });
       }
     });
 
+    socket.on("place_bet", async ({ betType, amount }) => {
+      if (!currentGameId) {
+        socket.emit("error", { message: "Not in a game" });
+        return;
+      }
+
+      try {
+        const result = await service.placeBet(
+          userId,
+          currentGameId,
+          betType,
+          amount
+        );
+        if (result.success) {
+          socket.emit("bet_placed", result);
+
+          baccaratNamespace
+            .to(`game:${currentGameId}`)
+            .emit("game_state_update", {
+              type: "bet_placed",
+              gameId: currentGameId,
+              bets: result.game.bets,
+            });
+        }
+      } catch (err) {
+        socket.emit("error", { message: err.message });
+      }
+    });
+
+    socket.on("start_dealing", async () => {
+      if (!currentGameId) {
+        socket.emit("error", { message: "Not in a game" });
+        return;
+      }
+
+      try {
+        const result = await service.dealCards(currentGameId);
+        if (result.success) {
+          baccaratNamespace
+            .to(`game:${currentGameId}`)
+            .emit("game_state_update", {
+              type: "cards_dealt",
+              gameId: currentGameId,
+              playerCards: result.game.playerCards,
+              bankerCards: result.game.bankerCards,
+              playerScore: result.game.playerScore,
+              bankerScore: result.game.bankerScore,
+              winner: result.game.winner,
+              bets: result.game.bets,
+            });
+
+          setTimeout(async () => {
+            try {
+              const newRound = await service.startNewRound(currentGameId);
+              if (newRound.success) {
+                currentGameId = newRound.game.gameId;
+                socket.join(`game:${currentGameId}`);
+
+                baccaratNamespace
+                  .to(`game:${currentGameId}`)
+                  .emit("game_state_update", {
+                    type: "new_round",
+                    gameId: currentGameId,
+                    status: newRound.game.status,
+                    currentRound: newRound.game.currentRound,
+                  });
+              }
+            } catch (err) {
+              socket.emit("error", { message: err.message });
+            }
+          }, 5000);
+        }
+      } catch (err) {
+        socket.emit("error", { message: err.message });
+      }
+    });
+
+    socket.on("leave_game", () => {
+      if (currentGameId) {
+        socket.leave(`game:${currentGameId}`);
+        currentGameId = null;
+        socket.emit("game_left", { success: true });
+      }
+    });
+
     socket.on("disconnect", () => {
-      console.log(`❌ User ${userId} disconnected from Parachute`);
+      if (currentGameId) {
+        socket.leave(`game:${currentGameId}`);
+        baccaratNamespace
+          .to(`game:${currentGameId}`)
+          .emit("game_state_update", {
+            type: "player_left",
+            gameId: currentGameId,
+            userId: userId,
+          });
+      }
+      console.log(`❌ User ${userId} disconnected from Baccarat`);
     });
   });
 };

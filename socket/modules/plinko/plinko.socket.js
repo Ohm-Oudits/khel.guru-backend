@@ -42,8 +42,27 @@ const setupPlinkoSocket = () => {
       }
     });
 
-    socket.on("result", (data) => {
-      console.log(data);
+    socket.on("result", async (data) => {
+      try {
+        const result = await service.result(data, userId);
+
+        if (result.error) {
+          socket.emit("error", { message: result.error });
+          return;
+        }
+
+        // Emit success with updated balance and result
+        socket.emit("result_success", result.data);
+
+        // Broadcast to user's room for potential UI updates
+        socket.to(`plinko:${userId}`).emit("game_update", {
+          type: "result",
+          data: result.data,
+        });
+      } catch (err) {
+        console.error("Result handling error:", err);
+        socket.emit("error", { message: "Failed to process game result" });
+      }
     });
 
     socket.on("disconnect", () => {

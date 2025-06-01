@@ -32,19 +32,52 @@ const service = {
     }
   },
 
+  async rollDice(userId, betAmount, prediction, rollUnder) {
+    try {
+      if (
+        !userId ||
+        !betAmount ||
+        !prediction ||
+        typeof rollUnder === "undefined"
+      ) {
+        throw new Error("Missing required parameters");
+      }
+
+      // Generate random roll between 0-100
+      const rawRoll = Math.floor(Math.random() * 101);
+
+      // Calculate win based on rollUnder parameter
+      const isWin = rollUnder ? rawRoll < prediction : rawRoll > prediction;
+
+      // Calculate multiplier using the same formula as frontend
+      const houseEdge = 1;
+      const winChance = rollUnder ? prediction : 100 - prediction;
+      const multiplier = (100 - houseEdge) / winChance;
+
+      // Calculate profit
+      const winnings = isWin ? betAmount * multiplier : 0;
+      const profit = winnings - betAmount;
+
+      return {
+        result: {
+          diceRoll: rawRoll, // Send raw roll (0-100) to match frontend display
+          prediction,
+          isWin,
+          multiplier: parseFloat(multiplier.toFixed(2)),
+          profit: parseFloat(profit.toFixed(6)),
+        },
+      };
+    } catch (error) {
+      console.error("Error in rollDice:", error);
+      throw error;
+    }
+  },
+
   async checkout() {
     try {
       console.log("Checkout");
     } catch (error) {
       return { error: "An error occurred while checkout the game" };
-    }
-  },
-
-  async crash() {
-    try {
-      console.log("Crash Logic");
-    } catch (error) {
-      return { error: "An error occurred while crashing the game" };
     }
   },
 };

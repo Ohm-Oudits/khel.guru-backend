@@ -41,6 +41,26 @@ const setupWheelSocket = () => {
       }
     });
 
+    socket.on("play_game", async (data) => {
+      try {
+        const result = await service.playGame(userId, data);
+        if (result.error) {
+          socket.emit("error", { message: result.error });
+          return;
+        }
+
+        socket.emit("game_result", result.result);
+
+        wheelNamespace.emit("wheel_update", {
+          userId,
+          multiplier: result.result.multiplier,
+          timestamp: new Date(),
+        });
+      } catch (err) {
+        socket.emit("error", { message: err.message });
+      }
+    });
+
     socket.on("disconnect", () => {
       console.log(`❌ User ${userId} disconnected from Wheel`);
     });
