@@ -1,5 +1,5 @@
 import { io } from "../../socket.js";
-import service from "./slide.service.js";
+import service, { cleanup } from "./slide.service.js";
 import jwt from "jsonwebtoken";
 
 const setupSlideSocket = () => {
@@ -34,9 +34,73 @@ const setupSlideSocket = () => {
 
     socket.join(`slide:${userId}`);
 
-    socket.on("add_game", async (data) => {
+    socket.on("join_game", async () => {
       try {
-        await service.join(userId);
+        const result = await service.join(userId);
+        if (result.error) {
+          socket.emit("error", { message: result.error });
+          return;
+        }
+
+        socket.emit("game_state", result.gameState);
+      } catch (err) {
+        socket.emit("error", { message: err.message });
+      }
+    });
+
+    socket.on("place_bet", async (betData) => {
+      try {
+        const result = await service.placeBet(userId, betData);
+        if (result.error) {
+          socket.emit("error", { message: result.error });
+          return;
+        }
+
+        socket.emit("bet_placed", {
+          betAmount: betData.betAmount,
+          targetMultiplier: betData.targetMultiplier,
+          timestamp: Date.now(),
+        });
+
+        slideNamespace.emit("bets_updated", {
+          totalBets: service.getActiveBetsCount(),
+          timestamp: Date.now(),
+        });
+      } catch (err) {
+        socket.emit("error", { message: err.message });
+      }
+    });
+
+    socket.on("place_auto_bet", async (autoBetData) => {
+      try {
+        const { betAmount, targetMultiplier, numberOfBets } = autoBetData;
+
+        if (!numberOfBets || numberOfBets <= 0 || numberOfBets > 100) {
+          socket.emit("error", { message: "Invalid number of bets" });
+          return;
+        }
+
+        const result = await service.placeBet(userId, {
+          betAmount,
+          targetMultiplier,
+        });
+        if (result.error) {
+          socket.emit("error", { message: result.error });
+          return;
+        }
+
+        socket.data.autoBet = {
+          remainingBets: numberOfBets - 1,
+          betAmount,
+          targetMultiplier,
+        };
+
+        socket.emit("auto_bet_started", {
+          totalBets: numberOfBets,
+          remainingBets: numberOfBets - 1,
+          betAmount,
+          targetMultiplier,
+        });
       } catch (err) {
         socket.emit("error", { message: err.message });
       }
@@ -44,7 +108,42 @@ const setupSlideSocket = () => {
 
     socket.on("disconnect", () => {
       console.log(`❌ User ${userId} disconnected from Slide`);
+      delete socket.data.autoBet;
     });
+  });
+
+  slideNamespace.on("round_result", async (data) => {
+    const sockets = await slideNamespace.fetchSockets();
+    for (const socket of sockets) {
+      const autoBet = socket.data.autoBet;
+      if (autoBet && autoBet.remainingBets > 0) {
+        const result = await service.placeBet(socket.data.userId, {
+          betAmount: autoBet.betAmount,
+          targetMultiplier: autoBet.targetMultiplier,
+        });
+
+        if (result.success) {
+          autoBet.remainingBets--;
+          socket.emit("auto_bet_updated", {
+            remainingBets: autoBet.remainingBets,
+            betAmount: autoBet.betAmount,
+            targetMultiplier: autoBet.targetMultiplier,
+          });
+
+          if (autoBet.remainingBets === 0) {
+            socket.emit("auto_bet_complete");
+            delete socket.data.autoBet;
+          }
+        } else {
+          socket.emit("error", { message: result.error });
+          delete socket.data.autoBet;
+        }
+      }
+    }
+  });
+
+  process.on("SIGTERM", () => {
+    cleanup();
   });
 };
 
