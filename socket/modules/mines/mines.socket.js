@@ -25,9 +25,16 @@ const setupMinesSocket = () => {
     }
   });
 
-  minesNamespace.on("connection", (socket) => {
+  minesNamespace.on("connection", async (socket) => {
     const userId = socket.data.userId;
     console.log(`User ${userId} joined mines`);
+
+    try {
+      const history = await service.getHistory();
+      socket.emit("game_history", history);
+    } catch (err) {
+      //
+    }
 
     socket.join(`mines:${userId}`);
 

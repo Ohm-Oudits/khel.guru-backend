@@ -1,5 +1,6 @@
 import User from "../../../models/user.model.js";
 import Game from "../../../models/game.model.js";
+import Transaction from "../../../models/transaction.model.js";
 
 const generateResult = (risk, segments) => {
   const random = Math.random();
@@ -84,10 +85,43 @@ const service = {
   async playGame(userId, data) {
     try {
       const { risk, segments, betAmount } = data;
+      const user = await User.findById(userId);
+
+      if (!user) {
+        return { error: "User not found" };
+      }
+
+      if (user.balance < betAmount) {
+        return { error: "Insufficient balance" };
+      }
 
       const result = generateResult(risk, segments);
 
       const winAmount = betAmount * result.multiplier;
+      const finalBalance = user.balance - betAmount + winAmount;
+
+      user.balance = finalBalance;
+      await user.save();
+
+      const betTransaction = new Transaction({
+        userId: userId,
+        amount: betAmount,
+        type: "withdraw",
+        game: "wheel",
+        status: "success",
+      });
+      await betTransaction.save();
+
+      if (winAmount > 0) {
+        const winTransaction = new Transaction({
+          userId: userId,
+          amount: winAmount,
+          type: "deposit",
+          game: "wheel",
+          status: "success",
+        });
+        await winTransaction.save();
+      }
 
       return {
         success: true,
@@ -95,9 +129,11 @@ const service = {
           multiplier: result.multiplier,
           winAmount,
           chance: result.chance,
+          balance: finalBalance,
         },
       };
     } catch (error) {
+      console.log(error);
       return { error: "An error occurred while playing the game" };
     }
   },

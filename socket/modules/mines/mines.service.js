@@ -1,6 +1,7 @@
 import User from "../../../models/user.model.js";
 import Game from "../../../models/game.model.js";
 import Mines from "../../../models/games/mines.model.js";
+import Transaction from "../../../models/transaction.model.js";
 
 const createGrid = (mines) => {
   const grid = Array(25)
@@ -201,7 +202,20 @@ const service = {
       };
     } catch (error) {
       console.error("Checkout error:", error);
-      return { error: "An error occurred while checking out" };
+      return { error: "An error occurred during checkout" };
+    }
+  },
+
+  async getHistory() {
+    try {
+      const history = await Transaction.find({ game: "mines" })
+        .sort({ createdAt: -1 })
+        .limit(10)
+        .populate("userId", "username");
+      return history;
+    } catch (error) {
+      console.error("Get history error:", error);
+      return { error: "An error occurred while fetching history" };
     }
   },
 
