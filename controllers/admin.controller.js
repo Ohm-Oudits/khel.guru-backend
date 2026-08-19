@@ -1,5 +1,7 @@
 import AuthSession from "../models/authSession.model.js";
 import AuditLog from "../models/auditLog.model.js";
+import CryptoDeposit from "../models/cryptoDeposit.model.js";
+import { recheckDeposit } from "../services/cryptoWallet.service.js";
 import KycProfile from "../models/kycProfile.model.js";
 import LedgerEntry from "../models/ledgerEntry.model.js";
 import ResponsibleGamingLimit from "../models/responsibleGamingLimit.model.js";
@@ -214,6 +216,61 @@ export const getActiveSelfExclusions = async (req, res, next) => {
     res.json({
       count: selfExclusions.length,
       selfExclusions,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const listAllCryptoDeposits = async (req, res, next) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 50, 200);
+    const filters = {};
+
+    if (req.query.status) {
+      filters.status = String(req.query.status).trim();
+    }
+
+    if (req.query.chain) {
+      filters.chain = String(req.query.chain).trim();
+    }
+
+    const deposits = await CryptoDeposit.find(filters)
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .populate("userId", "username email accountUid")
+      .lean();
+
+    res.json({
+      count: deposits.length,
+      deposits,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const recheckCryptoDeposit = async (req, res, next) => {
+  try {
+    const deposit = await CryptoDeposit.findById(req.params.depositId);
+
+    if (!deposit) {
+      return res.status(404).json({ error: "Crypto deposit not found" });
+    }
+
+    const result = await recheckDeposit(deposit);
+
+    await createAdminAuditLog(
+      req,
+      "admin.crypto.deposit.rechecked",
+      "CryptoDeposit",
+      deposit._id,
+      { statusBefore: deposit.status, statusAfter: result.status }
+    );
+
+    res.json({
+      message: "Crypto deposit rechecked",
+      deposit: result,
     });
   } catch (error) {
     next(error);

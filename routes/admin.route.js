@@ -4,6 +4,8 @@ import {
   getAdminOverview,
   getAdminQueues,
   getKycReviewQueue,
+  listAllCryptoDeposits,
+  recheckCryptoDeposit,
   reviewKycProfile,
 } from "../controllers/admin.controller.js";
 import { apiLimiter } from "../middleware/rateLimiter.js";
@@ -19,5 +21,7 @@ router.get("/queues", apiLimiter, getAdminQueues);
 router.get("/kyc/queue", apiLimiter, getKycReviewQueue);
 router.post("/kyc/:userId/review", apiLimiter, reviewKycProfile);
 router.get("/self-exclusions", apiLimiter, getActiveSelfExclusions);
+router.get("/crypto/deposits", apiLimiter, listAllCryptoDeposits);
+router.post("/crypto/deposits/:depositId/recheck", apiLimiter, recheckCryptoDeposit);
 
 export default router;

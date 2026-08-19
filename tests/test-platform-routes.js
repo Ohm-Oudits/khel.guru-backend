@@ -64,6 +64,8 @@ expectRoute(adminRoutes, "/queues", ["GET"]);
 expectRoute(adminRoutes, "/kyc/queue", ["GET"]);
 expectRoute(adminRoutes, "/kyc/:userId/review", ["POST"]);
 expectRoute(adminRoutes, "/self-exclusions", ["GET"]);
+expectRoute(adminRoutes, "/crypto/deposits", ["GET"]);
+expectRoute(adminRoutes, "/crypto/deposits/:depositId/recheck", ["POST"]);
 
 expectRoute(betsRoutes, "/single", ["POST"]);
 expectRoute(betsRoutes, "/history", ["GET"]);
@@ -109,14 +111,16 @@ expectRoute(walletRoutes, "/demo/top-up", ["POST"]);
 expectRoute(walletRoutes, "/withdraw", ["POST"]);
 expectRoute(walletRoutes, "/vault/transfer", ["POST"]);
 expectRoute(walletRoutes, "/transactions", ["GET"]);
+expectRoute(walletRoutes, "/crypto/addresses", ["GET"]);
+expectRoute(walletRoutes, "/crypto/deposits", ["GET"]);
 
 assert.equal(accountRoutes.length, 5, "Account router surface changed unexpectedly");
-assert.equal(adminRoutes.length, 5, "Admin router surface changed unexpectedly");
+assert.equal(adminRoutes.length, 7, "Admin router surface changed unexpectedly");
 assert.equal(betsRoutes.length, 4, "Bets router surface changed unexpectedly");
 assert.equal(gameRoutes.length, 11, "Game router surface changed unexpectedly");
 assert.equal(securityRoutes.length, 3, "Security router surface changed unexpectedly");
 assert.equal(sportRoutes.length, 11, "Sports router surface changed unexpectedly");
 assert.equal(supportRoutes.length, 2, "Support router surface changed unexpectedly");
-assert.equal(walletRoutes.length, 8, "Wallet router surface changed unexpectedly");
+assert.equal(walletRoutes.length, 10, "Wallet router surface changed unexpectedly");
 
 console.log("Platform route smoke test passed");

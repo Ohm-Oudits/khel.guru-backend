@@ -7,6 +7,7 @@ import helmet from "helmet";
 import morgan from "morgan";
 import http from "http";
 import { setupSocket } from "./socket/socket.js";
+import { assertCryptoBootSafety } from "./services/cryptoWallet.service.js";
 
 // Import middleware
 import { errorHandler, notFound } from "./middleware/errorHandler.js";
@@ -140,6 +141,13 @@ requiredEnvVars.forEach((key) => {
     process.exit(1);
   }
 });
+
+try {
+  assertCryptoBootSafety();
+} catch (error) {
+  console.error(error.message);
+  process.exit(1);
+}
 
 mongoose
   .connect(process.env.MONGODB_URI, {
