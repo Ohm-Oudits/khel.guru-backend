@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "test": "node tests/test-auth.js"
+    "test": "node tests/run-tests.js"
   },
   "keywords": [],
   "author": "",

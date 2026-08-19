@@ -1,12 +1,17 @@
-import User from "../models/user.model.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
 import nodemailer from "nodemailer";
+import User from "../models/user.model.js";
+import { revokeAuthSession, createAuthSession } from "../services/authSession.service.js";
 
 dotenv.config();
 
-// Email transporter setup
+const SESSION_MAX_AGE_DAYS = Number(process.env.SESSION_MAX_AGE_DAYS || 7);
+const REMEMBER_ME_SESSION_DAYS = Number(
+  process.env.REMEMBER_ME_SESSION_DAYS || 30
+);
+
 const transporter = nodemailer.createTransport({
   service: "gmail",
   auth: {
@@ -15,19 +20,18 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-// Generate OTP
-const generateOTP = () => {
-  return Math.floor(100000 + Math.random() * 900000);
-};
+const generateOTP = () => Math.floor(100000 + Math.random() * 900000);
 
-const generateToken = (user) => {
-  return jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
-    expiresIn: "7d",
-  });
-};
+const generateToken = (user, session, rememberMe = false) => {
+  const expiresIn = rememberMe
+    ? `${REMEMBER_ME_SESSION_DAYS}d`
+    : `${SESSION_MAX_AGE_DAYS}d`;
 
-const rememberMeToken = (user) => {
-  return jwt.sign({ id: user._id }, process.env.JWT_SECRET);
+  return jwt.sign(
+    { id: user._id, sid: session?._id?.toString?.() || null },
+    process.env.JWT_SECRET,
+    { expiresIn }
+  );
 };
 
 const sanitizeUser = (user) => {
@@ -40,22 +44,84 @@ const sanitizeUser = (user) => {
   return sanitizedUser;
 };
 
+const sanitizeSession = (session) => ({
+  id: session._id,
+  authMethod: session.authMethod,
+  status: session.status,
+  rememberMe: session.rememberMe,
+  lastSeenAt: session.lastSeenAt,
+  expiresAt: session.expiresAt,
+  ipAddress: session.ipAddress,
+  userAgent: session.userAgent,
+  deviceLabel: session.deviceLabel,
+});
+
+const generateUsername = async (length = 10) => {
+  let username;
+  let isUnique = false;
+
+  while (!isUnique) {
+    username = Math.random().toString(36).substring(2, 2 + length);
+    const existingUser = await User.findOne({ username });
+
+    if (!existingUser) {
+      isUnique = true;
+    }
+  }
+
+  return username;
+};
+
+const issueAuthResponse = async ({
+  req,
+  res,
+  user,
+  authMethod,
+  rememberMe = false,
+  statusCode = 200,
+  message,
+  extra = {},
+}) => {
+  user.lastLoginAt = new Date();
+  await user.save();
+
+  const session = await createAuthSession({
+    user,
+    req,
+    authMethod,
+    rememberMe,
+  });
+
+  const token = generateToken(user, session, rememberMe);
+
+  return res.status(statusCode).json({
+    ...(message ? { message } : {}),
+    token,
+    session: sanitizeSession(session),
+    user: sanitizeUser(user),
+    ...extra,
+  });
+};
+
 export const register = async (req, res) => {
   try {
     const { username, email, password, phoneNumber } = req.body;
 
     const existingUser = await User.findOne({ email });
-    if (existingUser)
+    if (existingUser) {
       return res.status(400).json({ message: "Email already exists" });
+    }
 
     const newUser = new User({ username, email, password, phoneNumber });
     await newUser.save();
 
-    const token = generateToken(newUser);
-    res.status(201).json({
+    return issueAuthResponse({
+      req,
+      res,
+      user: newUser,
+      authMethod: "password",
+      statusCode: 201,
       message: "User registered successfully",
-      token,
-      user: sanitizeUser(newUser),
     });
   } catch (error) {
     res.status(500).json({ message: "Error registering user", error });
@@ -64,45 +130,26 @@ export const register = async (req, res) => {
 
 export const login = async (req, res) => {
   try {
-    const { email, password } = req.body;
-    const rememberMe = req.body.rememberMe || false;
+    const { email, password, rememberMe = false } = req.body;
 
     const user = await User.findOne({
       $or: [{ email }, { username: email }],
     });
 
-    if (!user || !(await bcrypt.compare(password, user.password))) {
+    if (!user || !user.password || !(await bcrypt.compare(password, user.password))) {
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
-    let token;
-    if (rememberMe) {
-      token = rememberMeToken(user);
-    } else {
-      token = generateToken(user);
-    }
-
-    res.json({ token, user: sanitizeUser(user) });
+    return issueAuthResponse({
+      req,
+      res,
+      user,
+      authMethod: "password",
+      rememberMe,
+    });
   } catch (error) {
     res.status(500).json({ message: "Error logging in", error });
   }
-};
-
-const generateUsername = async () => {
-  let username;
-  let isUnique = false;
-
-  while (!isUnique) {
-    const randomStr = Math.random().toString(36).substring(2, 12);
-    username = randomStr;
-
-    const existingUser = await User.findOne({ username });
-    if (!existingUser) {
-      isUnique = true;
-    }
-  }
-
-  return username;
 };
 
 export const googleAuth = async (req, res) => {
@@ -121,8 +168,12 @@ export const googleAuth = async (req, res) => {
       await user.save();
     }
 
-    const token = generateToken(user);
-    res.json({ token, user: sanitizeUser(user) });
+    return issueAuthResponse({
+      req,
+      res,
+      user,
+      authMethod: "google",
+    });
   } catch (error) {
     res.status(500).json({ message: "Google authentication failed", error });
   }
@@ -142,14 +193,17 @@ export const telegramAuth = async (req, res) => {
       await user.save();
     }
 
-    const token = generateToken(user);
-    res.json({ token, user: sanitizeUser(user) });
+    return issueAuthResponse({
+      req,
+      res,
+      user,
+      authMethod: "telegram",
+    });
   } catch (error) {
     res.status(500).json({ message: "Telegram authentication failed", error });
   }
 };
 
-// **X (Twitter) Login/Signup**
 export const xAuth = async (req, res) => {
   try {
     const { xId } = req.body;
@@ -164,66 +218,55 @@ export const xAuth = async (req, res) => {
       await user.save();
     }
 
-    const token = generateToken(user);
-    res.json({ token, user: sanitizeUser(user) });
+    return issueAuthResponse({
+      req,
+      res,
+      user,
+      authMethod: "x",
+    });
   } catch (error) {
     res.status(500).json({ message: "X authentication failed", error });
   }
 };
 
-// instant registration
 export const instantRegister = async (req, res) => {
   try {
-    const generateUsername = async () => {
-      let username;
-      let isUnique = false;
-
-      // Generate a completely random username
-      while (!isUnique) {
-        const randomStr = Math.random().toString(36).substring(2, 10); // Random string from numbers and letters
-        username = randomStr;
-
-        // Check if the username already exists
-        const existingUser = await User.findOne({ username });
-        if (!existingUser) {
-          isUnique = true;
-        }
-      }
-
-      return username;
-    };
-
     const generatePassword = () => {
       const length = 12;
       const charset =
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*";
       let password = "";
-      for (let i = 0; i < length; i++) {
+
+      for (let i = 0; i < length; i += 1) {
         const randomIndex = Math.floor(Math.random() * charset.length);
         password += charset[randomIndex];
       }
+
       return password;
     };
 
-    const username = await generateUsername();
+    const username = await generateUsername(8);
     const password = generatePassword();
 
     const newUser = new User({ username, password });
     await newUser.save();
 
-    const token = generateToken(newUser);
-    res.status(201).json({
+    return issueAuthResponse({
+      req,
+      res,
+      user: newUser,
+      authMethod: "instant",
+      statusCode: 201,
       message: "User registered successfully",
-      token,
-      user: sanitizeUser(newUser),
-      credentials: { username, password },
+      extra: {
+        credentials: { username, password },
+      },
     });
   } catch (error) {
     res.status(500).json({ message: "Error in instant registration", error });
   }
 };
 
-// Forgot Password
 export const forgotPassword = async (req, res) => {
   try {
     const { email } = req.body;
@@ -236,11 +279,10 @@ export const forgotPassword = async (req, res) => {
     const otp = generateOTP();
     const otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
 
-    user.resetPasswordOTP = otp;
+    user.resetPasswordOTP = String(otp);
     user.resetPasswordOTPExpiry = otpExpiry;
     await user.save();
 
-    // Send OTP via email
     const mailOptions = {
       from: process.env.EMAIL_USER,
       to: email,
@@ -256,7 +298,6 @@ export const forgotPassword = async (req, res) => {
   }
 };
 
-// Verify OTP
 export const verifyOTP = async (req, res) => {
   try {
     const { email, otp } = req.body;
@@ -270,7 +311,7 @@ export const verifyOTP = async (req, res) => {
       return res.status(400).json({ message: "No OTP request found" });
     }
 
-    if (user.resetPasswordOTP !== otp) {
+    if (user.resetPasswordOTP !== String(otp)) {
       return res.status(400).json({ message: "Invalid OTP" });
     }
 
@@ -278,7 +319,6 @@ export const verifyOTP = async (req, res) => {
       return res.status(400).json({ message: "OTP has expired" });
     }
 
-    // Clear OTP after successful verification
     user.resetPasswordOTP = undefined;
     user.resetPasswordOTPExpiry = undefined;
     await user.save();
@@ -289,7 +329,6 @@ export const verifyOTP = async (req, res) => {
   }
 };
 
-// Reset Password
 export const resetPassword = async (req, res) => {
   try {
     const { email, newPassword } = req.body;
@@ -308,7 +347,28 @@ export const resetPassword = async (req, res) => {
   }
 };
 
-// Verify Phone OTP
+export const sendPhoneOTP = async (req, res) => {
+  try {
+    const { phoneNumber } = req.body;
+    const user = await User.findOne({ phoneNumber });
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const otp = generateOTP();
+    const otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
+
+    user.phoneOTP = String(otp);
+    user.phoneOTPExpiry = otpExpiry;
+    await user.save();
+
+    res.json({ message: "OTP sent to phone number" });
+  } catch (error) {
+    res.status(500).json({ message: "Error sending phone OTP", error });
+  }
+};
+
 export const verifyPhoneOTP = async (req, res) => {
   try {
     const { phoneNumber, otp } = req.body;
@@ -322,7 +382,7 @@ export const verifyPhoneOTP = async (req, res) => {
       return res.status(400).json({ message: "No OTP request found" });
     }
 
-    if (user.phoneOTP !== otp) {
+    if (user.phoneOTP !== String(otp)) {
       return res.status(400).json({ message: "Invalid OTP" });
     }
 
@@ -341,37 +401,22 @@ export const verifyPhoneOTP = async (req, res) => {
   }
 };
 
-// Send Phone OTP
-export const sendPhoneOTP = async (req, res) => {
+export const getUserData = async (req, res) => {
   try {
-    const { phoneNumber } = req.body;
-    const user = await User.findOne({ phoneNumber });
-
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
-
-    const otp = generateOTP();
-    const otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
-
-    user.phoneOTP = otp;
-    user.phoneOTPExpiry = otpExpiry;
-    await user.save();
-
-    res.json({ message: "OTP sent to your phone", otp });
+    res.json({ user: sanitizeUser(req.user) });
   } catch (error) {
-    res.status(500).json({ message: "Error sending phone OTP", error });
+    res.status(500).json({ message: "Error fetching user data", error });
   }
 };
 
-export const getUserData = async (req, res) => {
+export const logout = async (req, res) => {
   try {
-    const user = await User.findById(req.userId);
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
+    if (req.authSession?._id) {
+      await revokeAuthSession(req.authSession._id);
     }
-    res.json({ user: sanitizeUser(user) });
+
+    res.json({ message: "Logged out successfully" });
   } catch (error) {
-    res.status(500).json({ message: "Error fetching user data", error });
+    res.status(500).json({ message: "Error logging out", error });
   }
 };

@@ -19,6 +19,27 @@ const UserSchema = new mongoose.Schema(
     },
     phoneNumber: { type: String, unique: true, sparse: true },
     phoneNumberVerified: { type: Boolean, default: false },
+    preferredCurrency: {
+      type: String,
+      default: "INR",
+      uppercase: true,
+      trim: true,
+    },
+    accountStatus: {
+      type: String,
+      enum: ["active", "self_excluded", "suspended", "closed"],
+      default: "active",
+    },
+    roles: {
+      type: [String],
+      default: ["player"],
+    },
+    security: {
+      twoFactorEnabled: { type: Boolean, default: false },
+      passkeyEnabled: { type: Boolean, default: false },
+      suspiciousLoginLocked: { type: Boolean, default: false },
+      lastPasswordChangedAt: { type: Date, default: null },
+    },
     googleId: { type: String, unique: true, sparse: true },
     telegramId: { type: String, unique: true, sparse: true },
     xId: { type: String, unique: true, sparse: true },
@@ -29,6 +50,7 @@ const UserSchema = new mongoose.Schema(
     phoneOTP: { type: String },
     phoneOTPExpiry: { type: Date },
     socketId: { type: String, default: null },
+    lastLoginAt: { type: Date, default: null },
   },
   { timestamps: true }
 );
@@ -38,6 +60,7 @@ UserSchema.pre("save", async function (next) {
   if (!this.isModified("password")) return next();
   const salt = await bcrypt.genSalt(10);
   this.password = await bcrypt.hash(this.password, salt);
+  this.security.lastPasswordChangedAt = new Date();
   next();
 });
 

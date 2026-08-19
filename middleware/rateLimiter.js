@@ -10,7 +10,7 @@ class RateLimiter {
 
   // Clean up old entries every minute
   cleanup() {
-    setInterval(() => {
+    const cleanupInterval = setInterval(() => {
       const now = Date.now();
       const windowMs = parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 900000; // 15 minutes
 
@@ -20,6 +20,10 @@ class RateLimiter {
         }
       }
     }, 60000);
+
+    if (typeof cleanupInterval.unref === "function") {
+      cleanupInterval.unref();
+    }
   }
 
   isAllowed(identifier) {

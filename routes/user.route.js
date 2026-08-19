@@ -12,6 +12,7 @@ import {
   verifyPhoneOTP,
   getUserData,
   instantRegister,
+  logout,
 } from "../controllers/user.controllers.js";
 import { verifyToken } from "../middleware/userTokenCheck.js";
 
@@ -36,5 +37,6 @@ router.post("/verify-phone-otp", verifyPhoneOTP);
 
 // Protected routes
 router.get("/me", verifyToken, getUserData);
+router.post("/logout", verifyToken, logout);
 
 export default router;

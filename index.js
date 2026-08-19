@@ -17,6 +17,9 @@ import userRoutes from "./routes/user.route.js";
 import gameRoutes from "./routes/game.route.js";
 import sportRoutes from "./routes/sport.route.js";
 import walletRoutes from "./routes/wallet.route.js";
+import accountRoutes from "./routes/account.route.js";
+import securityRoutes from "./routes/security.route.js";
+import supportRoutes from "./routes/support.route.js";
 
 import setupBaccaratSocket from "./socket/modules/baccarat/baccarat.socket.js";
 import setupBlackjackSocket from "./socket/modules/blackjack/blackjack.socket.js";
@@ -103,6 +106,8 @@ app.use(cors(corsOptions));
 app.use("/api/", apiLimiter);
 app.use("/api/user/login", authLimiter);
 app.use("/api/user/register", authLimiter);
+app.use("/api/auth/login", authLimiter);
+app.use("/api/auth/register", authLimiter);
 
 // Health check endpoint
 app.get("/health", (req, res) => {
@@ -111,6 +116,16 @@ app.get("/health", (req, res) => {
     message: "Server is healthy",
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || "development",
+    apiFamilies: [
+      "/api/auth",
+      "/api/account",
+      "/api/security",
+      "/api/wallet",
+      "/api/cashier",
+      "/api/support",
+      "/api/sports",
+      "/api/casino",
+    ],
   });
 });
 
@@ -140,9 +155,16 @@ mongoose
 
 // API Routes
 app.use("/api/user", userRoutes);
+app.use("/api/auth", userRoutes);
 app.use("/api/game", gameRoutes);
+app.use("/api/casino", gameRoutes);
 app.use("/api/sport", sportRoutes);
+app.use("/api/sports", sportRoutes);
 app.use("/api/wallet", walletRoutes);
+app.use("/api/cashier", walletRoutes);
+app.use("/api/account", accountRoutes);
+app.use("/api/security", securityRoutes);
+app.use("/api/support", supportRoutes);
 
 // 404 handler for unknown routes
 app.use(notFound);

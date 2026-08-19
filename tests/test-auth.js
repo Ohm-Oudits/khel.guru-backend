@@ -35,10 +35,11 @@ expectRoute("/reset-password", ["POST"]);
 expectRoute("/send-phone-otp", ["POST"]);
 expectRoute("/verify-phone-otp", ["POST"]);
 expectRoute("/me", ["GET"]);
+expectRoute("/logout", ["POST"]);
 
 assert.equal(
   routeEntries.length,
-  12,
+  13,
   "User router should expose the expected auth surface"
 );
 
