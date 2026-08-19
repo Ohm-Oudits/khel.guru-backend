@@ -124,5 +124,42 @@ const settled = await SportsEvent.findById(event._id).lean();
 assert.equal(settled.status, "settled");
 console.log("settled events are immune to provider feed updates");
 
+// Hydrated list endpoint embeds markets with current prices in one query.
+const { getSportsbookEvents } = await import("../controllers/sportsbook.controller.js");
+
+const makeRes = () => {
+  const res = { statusCode: 200 };
+  res.status = (code) => {
+    res.statusCode = code;
+    return res;
+  };
+  res.json = (body) => {
+    res.body = body;
+    return res;
+  };
+  return res;
+};
+
+const hydratedRes = makeRes();
+await getSportsbookEvents(
+  { query: { sportKey: "cricket", hydrate: "1" } },
+  hydratedRes,
+  (error) => {
+    throw error;
+  }
+);
+
+assert.equal(hydratedRes.body.count, 1);
+const hydratedEvent = hydratedRes.body.events[0];
+assert.equal(hydratedEvent.rawPayload, undefined, "rawPayload must be projected out");
+assert.equal(hydratedEvent.markets.length, 1);
+assert.equal(
+  hydratedEvent.markets[0].selections.find((s) => s.key === "mumbai_indians")
+    .priceDecimal,
+  1.95
+);
+assert.equal(hydratedEvent.markets[0].latestOdds[0].signature, undefined);
+console.log("hydrated events endpoint embeds markets and prices in one query");
+
 await mongoose.disconnect();
 await mongod.stop();

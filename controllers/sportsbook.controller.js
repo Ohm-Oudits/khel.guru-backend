@@ -58,7 +58,12 @@ export const getSportsbookEvents = async (req, res, next) => {
     const filters = {};
 
     if (req.query.sportKey) {
-      filters.sportKey = req.query.sportKey;
+      // A canonical group like "cricket" matches provider keys such as
+      // cricket_ipl through sportGroup; exact provider keys still work.
+      filters.$or = [
+        { sportKey: req.query.sportKey },
+        { sportGroup: req.query.sportKey },
+      ];
     }
 
     if (req.query.status) {
@@ -71,9 +76,51 @@ export const getSportsbookEvents = async (req, res, next) => {
 
     const limit = parseLimit(req.query.limit);
 
+    if (req.query.hydrate) {
+      const events = await SportsEvent.aggregate([
+        { $match: filters },
+        { $sort: { startTime: 1 } },
+        { $limit: limit },
+        {
+          $lookup: {
+            from: "markets",
+            localField: "_id",
+            foreignField: "eventId",
+            as: "markets",
+            pipeline: [
+              {
+                $project: {
+                  title: 1,
+                  marketType: 1,
+                  providerMarketKey: 1,
+                  status: 1,
+                  selections: 1,
+                  latestSnapshotAt: 1,
+                  latestOdds: { $slice: ["$latestOdds", 3] },
+                },
+              },
+            ],
+          },
+        },
+        {
+          $project: {
+            rawPayload: 0,
+            "markets.latestOdds.signature": 0,
+          },
+        },
+      ]);
+
+      return res.json({
+        filters,
+        count: events.length,
+        events,
+      });
+    }
+
     const events = await SportsEvent.find(filters)
       .sort({ startTime: 1, updatedAt: -1 })
       .limit(limit)
+      .select("-rawPayload")
       .lean();
 
     res.json({

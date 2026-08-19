@@ -3,6 +3,7 @@ import crypto from "crypto";
 import Market from "../models/market.model.js";
 import OddsSnapshot from "../models/oddsSnapshot.model.js";
 import SportsEvent from "../models/sportsEvent.model.js";
+import { publishIngestChanges } from "../socket/modules/sports/sports.emitter.js";
 import { recordUsage } from "./providerUsage.service.js";
 import { resolveSportGroup } from "./sportsbookCatalog.service.js";
 import {
@@ -296,6 +297,8 @@ export const runSportsbookIngest = async ({
   }
 
   const { events, changes } = await ingestNormalizedSportsbookFeed(items);
+
+  publishIngestChanges(changes);
 
   return {
     provider,

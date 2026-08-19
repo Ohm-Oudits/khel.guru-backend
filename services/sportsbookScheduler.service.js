@@ -1,4 +1,5 @@
 import SportsEvent from "../models/sportsEvent.model.js";
+import { emitEventState } from "../socket/modules/sports/sports.emitter.js";
 import { canSpend } from "./providerUsage.service.js";
 import { runSportsbookIngest } from "./sportsbookIngest.service.js";
 
@@ -107,6 +108,16 @@ const flipStartedEventsLive = async (onFlipped = null) => {
     { _id: { $in: dueEvents.map((event) => event._id) } },
     { $set: { status: "live" } }
   );
+
+  for (const event of dueEvents) {
+    emitEventState({
+      eventId: event._id,
+      sportGroup: event.sportGroup,
+      status: "live",
+      previousStatus: "upcoming",
+      startTime: event.startTime,
+    });
+  }
 
   if (onFlipped) {
     await onFlipped(dueEvents);
