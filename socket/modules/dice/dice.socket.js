@@ -52,7 +52,7 @@ const setupDiceSocket = () => {
     socket.on("roll_dice", async (data) => {
       try {
         console.log("roll");
-        const { betAmount, prediction, rollUnder } = data;
+        const { betAmount, prediction, rollUnder, walletType } = data;
 
         if (!betAmount || !prediction || typeof rollUnder === "undefined") {
           socket.emit("error", { message: "Missing required parameters" });
@@ -63,7 +63,8 @@ const setupDiceSocket = () => {
           userId,
           betAmount,
           prediction,
-          rollUnder
+          rollUnder,
+          walletType
         );
         if (result.error) {
           socket.emit("error", { message: result.error });

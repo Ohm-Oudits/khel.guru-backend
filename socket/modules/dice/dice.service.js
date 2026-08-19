@@ -1,5 +1,9 @@
 import User from "../../../models/user.model.js";
 import Game from "../../../models/game.model.js";
+import {
+  debitGameStake,
+  creditGameWin,
+} from "../../../services/casinoWallet.service.js";
 
 const service = {
   async join(userId) {
@@ -32,7 +36,7 @@ const service = {
     }
   },
 
-  async rollDice(userId, betAmount, prediction, rollUnder) {
+  async rollDice(userId, betAmount, prediction, rollUnder, walletType = "demo") {
     try {
       if (
         !userId ||
@@ -41,6 +45,16 @@ const service = {
         typeof rollUnder === "undefined"
       ) {
         throw new Error("Missing required parameters");
+      }
+
+      // Debit the stake from the wallet first; a losing bet keeps this debit.
+      const debit = await debitGameStake(userId, {
+        gameKey: "dice",
+        amount: betAmount,
+        walletType,
+      });
+      if (debit.error) {
+        return { error: debit.error };
       }
 
       // Generate random roll between 0-100
@@ -58,6 +72,14 @@ const service = {
       const winnings = isWin ? betAmount * multiplier : 0;
       const profit = winnings - betAmount;
 
+      // Credit winnings (stake + profit) on a win; a loss credits nothing.
+      const credit = await creditGameWin(userId, {
+        gameKey: "dice",
+        amount: winnings,
+        walletType,
+      });
+      const newBalance = credit.balance ?? debit.balance;
+
       return {
         result: {
           diceRoll: rawRoll, // Send raw roll (0-100) to match frontend display
@@ -65,6 +87,8 @@ const service = {
           isWin,
           multiplier: parseFloat(multiplier.toFixed(2)),
           profit: parseFloat(profit.toFixed(6)),
+          newBalance,
+          walletType,
         },
       };
     } catch (error) {
