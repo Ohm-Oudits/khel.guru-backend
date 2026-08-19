@@ -18,6 +18,17 @@ export const creditAvailable = async (walletAccountId, amount) =>
     { new: true }
   );
 
+export const debitAvailable = async (walletAccountId, amount) =>
+  WalletAccount.findOneAndUpdate(
+    {
+      _id: walletAccountId,
+      status: "active",
+      availableBalance: { $gte: amount },
+    },
+    { $inc: { availableBalance: -amount } },
+    { new: true }
+  );
+
 export const placeHold = async (walletAccountId, amount) =>
   WalletAccount.findOneAndUpdate(
     {

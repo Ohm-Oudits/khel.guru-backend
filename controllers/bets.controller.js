@@ -6,6 +6,7 @@ import SelfExclusion from "../models/selfExclusion.model.js";
 import SportsBet from "../models/sportsBet.model.js";
 import SportsEvent from "../models/sportsEvent.model.js";
 import { settleSingleBet } from "../services/betSettlement.service.js";
+import { debitAvailable } from "../services/paymentSettlement.service.js";
 import {
   createLedgerEntry,
   ensureDefaultWalletAccounts,
@@ -190,15 +191,13 @@ export const placeSingleBet = async (req, res, next) => {
       return res.status(400).json({ message: "Wallet account not available" });
     }
 
-    if (walletAccount.availableBalance < amount) {
+    const debitedAccount = await debitAvailable(walletAccount._id, amount);
+    if (!debitedAccount) {
       return res.status(400).json({ message: "Insufficient balance" });
     }
 
-    walletAccount.availableBalance -= amount;
-    await walletAccount.save();
-
     if (walletType === "cash") {
-      await syncLegacyBalance(req.user._id, walletAccount.availableBalance);
+      await syncLegacyBalance(req.user._id, debitedAccount.availableBalance);
     }
 
     const potentialPayout = roundMoney(amount * currentPrice);
@@ -235,7 +234,7 @@ export const placeSingleBet = async (req, res, next) => {
       direction: "debit",
       category: "sports_bet",
       amount,
-      balanceAfter: walletAccount.availableBalance,
+      balanceAfter: debitedAccount.availableBalance,
       description: `Sports bet placed on ${selection.name}`,
       referenceType: "SportsBet",
       referenceId: bet._id,
@@ -257,7 +256,7 @@ export const placeSingleBet = async (req, res, next) => {
     res.status(201).json({
       message: "Sports bet placed successfully",
       bet,
-      account: serializeWalletAccount(walletAccount),
+      account: serializeWalletAccount(debitedAccount),
       ledgerEntryId: ledgerEntry._id,
     });
   } catch (error) {
