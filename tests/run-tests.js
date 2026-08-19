@@ -1,4 +1,5 @@
 await import("./test-auth.js");
 await import("./test-platform-routes.js");
+await import("./test-sportsbook-provider.js");
 
 process.exit(0);

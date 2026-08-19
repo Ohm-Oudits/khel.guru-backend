@@ -16,6 +16,7 @@ import { apiLimiter, authLimiter } from "./middleware/rateLimiter.js";
 import userRoutes from "./routes/user.route.js";
 import gameRoutes from "./routes/game.route.js";
 import sportRoutes from "./routes/sport.route.js";
+import betsRoutes from "./routes/bets.route.js";
 import walletRoutes from "./routes/wallet.route.js";
 import accountRoutes from "./routes/account.route.js";
 import securityRoutes from "./routes/security.route.js";
@@ -126,6 +127,7 @@ app.get("/health", (req, res) => {
       "/api/support",
       "/api/admin",
       "/api/sports",
+      "/api/bets",
       "/api/casino",
     ],
   });
@@ -162,6 +164,7 @@ app.use("/api/game", gameRoutes);
 app.use("/api/casino", gameRoutes);
 app.use("/api/sport", sportRoutes);
 app.use("/api/sports", sportRoutes);
+app.use("/api/bets", betsRoutes);
 app.use("/api/wallet", walletRoutes);
 app.use("/api/cashier", walletRoutes);
 app.use("/api/account", accountRoutes);

@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 
 import accountRouter from "../routes/account.route.js";
 import adminRouter from "../routes/admin.route.js";
+import betsRouter from "../routes/bets.route.js";
 import securityRouter from "../routes/security.route.js";
+import sportRouter from "../routes/sport.route.js";
 import supportRouter from "../routes/support.route.js";
 import walletRouter from "../routes/wallet.route.js";
 
@@ -44,7 +46,9 @@ const expectRoute = (entries, path, methods) => {
 
 const accountRoutes = getRouteEntries(accountRouter);
 const adminRoutes = getRouteEntries(adminRouter);
+const betsRoutes = getRouteEntries(betsRouter);
 const securityRoutes = getRouteEntries(securityRouter);
+const sportRoutes = getRouteEntries(sportRouter);
 const supportRoutes = getRouteEntries(supportRouter);
 const walletRoutes = getRouteEntries(walletRouter);
 
@@ -52,9 +56,26 @@ expectRoute(accountRoutes, "/overview", ["GET"]);
 expectRoute(adminRoutes, "/overview", ["GET"]);
 expectRoute(adminRoutes, "/queues", ["GET"]);
 
+expectRoute(betsRoutes, "/single", ["POST"]);
+expectRoute(betsRoutes, "/history", ["GET"]);
+expectRoute(betsRoutes, "/:betId", ["GET"]);
+expectRoute(betsRoutes, "/:betId/settle", ["POST"]);
+
 expectRoute(securityRoutes, "/overview", ["GET"]);
 expectRoute(securityRoutes, "/sessions", ["GET"]);
 expectRoute(securityRoutes, "/sessions/:sessionId/revoke", ["POST"]);
+
+expectRoute(sportRoutes, "/catalog", ["GET"]);
+expectRoute(sportRoutes, "/providers", ["GET"]);
+expectRoute(sportRoutes, "/providers/:provider/sports", ["GET"]);
+expectRoute(sportRoutes, "/events", ["GET"]);
+expectRoute(sportRoutes, "/events/:eventId", ["GET"]);
+expectRoute(sportRoutes, "/events/:eventId/markets", ["GET"]);
+expectRoute(sportRoutes, "/ingest", ["POST"]);
+expectRoute(sportRoutes, "/", ["GET", "POST"]);
+expectRoute(sportRoutes, "/update/:id", ["PUT"]);
+expectRoute(sportRoutes, "/:id", ["DELETE"]);
+expectRoute(sportRoutes, "/all", ["GET"]);
 
 expectRoute(supportRoutes, "/overview", ["GET"]);
 expectRoute(supportRoutes, "/tickets", ["GET", "POST"]);
@@ -69,7 +90,9 @@ expectRoute(walletRoutes, "/transactions", ["GET"]);
 
 assert.equal(accountRoutes.length, 1, "Account router surface changed unexpectedly");
 assert.equal(adminRoutes.length, 2, "Admin router surface changed unexpectedly");
+assert.equal(betsRoutes.length, 4, "Bets router surface changed unexpectedly");
 assert.equal(securityRoutes.length, 3, "Security router surface changed unexpectedly");
+assert.equal(sportRoutes.length, 11, "Sports router surface changed unexpectedly");
 assert.equal(supportRoutes.length, 2, "Support router surface changed unexpectedly");
 assert.equal(walletRoutes.length, 7, "Wallet router surface changed unexpectedly");
 
