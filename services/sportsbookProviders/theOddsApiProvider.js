@@ -102,6 +102,59 @@ export const mapTheOddsApiOddsResponse = (events, sportKey, regions = "") =>
     };
   });
 
+// Scores rows resolve home/away by matching score names against the event's
+// own home_team/away_team fields — same API, names are consistent.
+export const mapTheOddsApiScoresResponse = (games = []) =>
+  games.map((game) => {
+    let scoreboard = null;
+
+    if (Array.isArray(game.scores)) {
+      const scoreFor = (team) => {
+        const row = game.scores.find((entry) => entry.name === team);
+        const value = row ? Number(row.score) : NaN;
+        return Number.isFinite(value) ? value : null;
+      };
+
+      const home = scoreFor(game.home_team);
+      const away = scoreFor(game.away_team);
+
+      if (home !== null && away !== null) {
+        scoreboard = { home, away, completed: Boolean(game.completed) };
+      }
+    }
+
+    return {
+      providerEventId: game.id,
+      completed: Boolean(game.completed),
+      scoreboard,
+      lastUpdate: game.last_update || null,
+    };
+  });
+
+export const fetchTheOddsApiScores = async ({ sportKey, daysFrom } = {}) => {
+  const apiKey = process.env.THE_ODDS_API_KEY;
+
+  if (!apiKey) {
+    throw new Error("THE_ODDS_API_KEY is not configured");
+  }
+
+  const response = await axios.get(
+    `${THE_ODDS_API_BASE_URL}/sports/${sportKey}/scores`,
+    {
+      params: {
+        apiKey,
+        dateFormat: "iso",
+        ...(daysFrom ? { daysFrom } : {}),
+      },
+    }
+  );
+
+  return {
+    items: mapTheOddsApiScoresResponse(response.data),
+    usage: readUsageHeaders(response.headers),
+  };
+};
+
 export const fetchTheOddsApiSports = async () => {
   const apiKey = process.env.THE_ODDS_API_KEY;
 

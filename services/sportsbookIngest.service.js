@@ -14,6 +14,7 @@ import {
 } from "./sportsbookProviders/simulatedLiveProvider.js";
 import {
   fetchTheOddsApiOdds,
+  fetchTheOddsApiScores,
   fetchTheOddsApiSports,
 } from "./sportsbookProviders/theOddsApiProvider.js";
 
@@ -307,6 +308,64 @@ export const runSportsbookIngest = async ({
     eventIds: events.map((event) => event._id),
     changes,
   };
+};
+
+// Match completed-score rows to stored events and settle them through the
+// shared settlement service. This is the load-bearing path for real-data
+// settlement: completed events drop out of the /odds feed, so only scores
+// polling can finish them.
+export const runScoresIngest = async ({ sportKey, daysFrom } = {}) => {
+  const { items, usage } = await fetchTheOddsApiScores({ sportKey, daysFrom });
+  await recordUsage("the-odds-api", usage);
+
+  const { settleEvent } = await import("./betSettlement.service.js");
+
+  const summary = { fetched: items.length, matched: 0, scoreboardUpdates: 0, settled: 0 };
+  const changes = [];
+
+  for (const item of items) {
+    const event = await SportsEvent.findOne({
+      provider: "the-odds-api",
+      providerEventId: item.providerEventId,
+    });
+
+    if (!event || ["settled", "cancelled"].includes(event.status)) {
+      continue;
+    }
+
+    summary.matched += 1;
+
+    if (item.scoreboard && scoreboardChanged(event.scoreboard, item.scoreboard)) {
+      event.scoreboard = item.scoreboard;
+      event.markModified("scoreboard");
+      await event.save();
+      summary.scoreboardUpdates += 1;
+
+      changes.push({
+        eventId: event._id,
+        sportKey: event.sportKey,
+        sportGroup: event.sportGroup,
+        status: event.status,
+        startTime: event.startTime,
+        statusChanged: false,
+        previousStatus: event.status,
+        scoreboardChanged: true,
+        scoreboard: item.scoreboard,
+        marketChanges: [],
+      });
+    }
+
+    if (item.completed && item.scoreboard) {
+      const result = await settleEvent(event._id, { actor: { type: "system" } });
+      if (!result.skipped) {
+        summary.settled += 1;
+      }
+    }
+  }
+
+  publishIngestChanges(changes);
+
+  return summary;
 };
 
 export const discoverSportsbookProviderSports = async (provider) => {

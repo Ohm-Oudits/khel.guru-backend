@@ -5,7 +5,7 @@ import ResponsibleGamingLimit from "../models/responsibleGamingLimit.model.js";
 import SelfExclusion from "../models/selfExclusion.model.js";
 import SportsBet from "../models/sportsBet.model.js";
 import SportsEvent from "../models/sportsEvent.model.js";
-import WalletAccount from "../models/walletAccount.model.js";
+import { settleSingleBet } from "../services/betSettlement.service.js";
 import {
   createLedgerEntry,
   ensureDefaultWalletAccounts,
@@ -164,13 +164,21 @@ export const placeSingleBet = async (req, res, next) => {
     const expectedPrice = req.body.expectedPrice
       ? roundMoney(Number(req.body.expectedPrice))
       : null;
+    const acceptOddsChange = req.body.acceptOddsChange === true;
+    const acceptBetterOdds = req.body.acceptBetterOdds !== false;
+    const tolerance = Number(process.env.ODDS_LOCK_TOLERANCE || 0);
 
-    if (expectedPrice && expectedPrice !== currentPrice) {
-      return res.status(409).json({
-        message: "Odds changed before the bet could be placed",
-        expectedPrice,
-        currentPrice,
-      });
+    if (expectedPrice !== null && !acceptOddsChange) {
+      const drifted = Math.abs(currentPrice - expectedPrice) > tolerance;
+      const improved = currentPrice > expectedPrice;
+
+      if (drifted && !(improved && acceptBetterOdds)) {
+        return res.status(409).json({
+          message: "Odds changed before the bet could be placed",
+          expectedPrice,
+          currentPrice,
+        });
+      }
     }
 
     const walletType = getRequestedWalletType(req.body.walletType);
@@ -216,6 +224,8 @@ export const placeSingleBet = async (req, res, next) => {
         walletType,
         provider: market.provider,
         eventStatusAtPlacement: event.status,
+        acceptOddsChange,
+        acceptBetterOdds,
       },
     });
 
@@ -322,79 +332,29 @@ export const settleBet = async (req, res, next) => {
       return res.status(400).json({ message: "Bet has already been settled" });
     }
 
-    const walletAccount = await WalletAccount.findById(bet.walletAccountId);
-
-    if (!walletAccount) {
-      return res.status(404).json({ message: "Wallet account not found" });
-    }
-
-    let creditAmount = 0;
-    let ledgerCategory = null;
-    let description = "";
-
-    if (result === "won") {
-      creditAmount = bet.potentialPayout;
-      ledgerCategory = "sports_settlement";
-      description = `Sports bet won on ${bet.selectionName}`;
-    }
-
-    if (result === "void") {
-      creditAmount = bet.stake;
-      ledgerCategory = "sports_refund";
-      description = `Sports bet voided for ${bet.selectionName}`;
-    }
-
-    let ledgerEntry = null;
-
-    if (creditAmount > 0) {
-      walletAccount.availableBalance = roundMoney(
-        walletAccount.availableBalance + creditAmount
-      );
-      await walletAccount.save();
-
-      if (walletAccount.walletType === "cash") {
-        await syncLegacyBalance(bet.userId, walletAccount.availableBalance);
-      }
-
-      ledgerEntry = await createLedgerEntry({
-        userId: bet.userId,
-        walletAccountId: walletAccount._id,
-        direction: "credit",
-        category: ledgerCategory,
-        amount: creditAmount,
-        balanceAfter: walletAccount.availableBalance,
-        description,
-        referenceType: "SportsBet",
-        referenceId: bet._id,
-        metadata: {
-          result,
-          settledByUserId: req.user._id,
-        },
-      });
-    }
-
-    bet.status = result;
-    bet.settlementStatus = result === "void" ? "voided" : "settled";
-    bet.metadata = {
-      ...bet.metadata,
-      settledAt: new Date().toISOString(),
-      settledByUserId: req.user._id,
-      settlementLedgerEntryId: ledgerEntry?._id || null,
-    };
-    await bet.save();
-
-    await createAuditLog(req, "sports.bet.settled", "SportsBet", bet._id, {
+    const outcome = await settleSingleBet({
+      bet,
       result,
-      walletAccountId: walletAccount._id,
-      creditAmount,
-      ledgerEntryId: ledgerEntry?._id || null,
+      actor: {
+        type: "admin",
+        userId: req.user._id,
+        ip: req.ip,
+        userAgent: req.get("User-Agent") || null,
+      },
     });
+
+    if (outcome.skipped) {
+      if (outcome.reason === "wallet-not-found") {
+        return res.status(404).json({ message: "Wallet account not found" });
+      }
+      return res.status(400).json({ message: "Bet has already been settled" });
+    }
 
     res.json({
       message: "Sports bet settled successfully",
-      bet,
-      account: serializeWalletAccount(walletAccount),
-      ledgerEntryId: ledgerEntry?._id || null,
+      bet: outcome.bet,
+      account: serializeWalletAccount(outcome.account),
+      ledgerEntryId: outcome.ledgerEntry?._id || null,
     });
   } catch (error) {
     next(error);
