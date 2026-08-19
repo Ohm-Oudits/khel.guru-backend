@@ -14,9 +14,9 @@ const projectRoot = path.resolve(__dirname, "..");
 const port = process.env.PORT || "8080";
 const shouldSeedDevUser = process.env.KG_SKIP_DEV_SEED !== "1";
 
-const runSeedUser = (mongoUri) =>
+const runSeedScript = (script, mongoUri, label) =>
   new Promise((resolve, reject) => {
-    const seedProcess = spawn("node", ["scripts/create-dev-user.js"], {
+    const seedProcess = spawn("node", [script], {
       cwd: projectRoot,
       env: {
         ...process.env,
@@ -32,7 +32,7 @@ const runSeedUser = (mongoUri) =>
         return;
       }
 
-      reject(new Error(`Dev user seed exited with code ${code ?? "unknown"}`));
+      reject(new Error(`${label} exited with code ${code ?? "unknown"}`));
     });
   });
 
@@ -47,8 +47,10 @@ const mongoUri = mongod.getUri();
 console.log(`Local in-memory MongoDB started at ${mongoUri}`);
 if (shouldSeedDevUser) {
   console.log("Seeding local dev user...");
-  await runSeedUser(mongoUri);
+  await runSeedScript("scripts/create-dev-user.js", mongoUri, "Dev user seed");
 }
+console.log("Seeding originals catalog...");
+await runSeedScript("scripts/seed-games.js", mongoUri, "Games seed");
 console.log(`Starting backend on port ${port}`);
 
 const child = spawn("node", ["index.js"], {
