@@ -40,12 +40,22 @@ const main = async () => {
   const token = auth.token;
   console.log(`   logged in as ${auth.user.username} (${auth.user.accountUid})`);
 
+  // Manual ingest needs admin/support; when the scheduler's simTick is
+  // running it does the ingesting anyway, so a 403 here is not fatal.
+  let ingestForbidden = false;
+  const tryIngest = async () => {
+    if (ingestForbidden) return;
+    try {
+      await api("/sports/ingest", { method: "POST", token, body: { provider: "simulated" } });
+    } catch (error) {
+      if (!String(error.message).includes("403")) throw error;
+      ingestForbidden = true;
+      console.log("   manual ingest is admin-only for this user; relying on the scheduler simTick");
+    }
+  };
+
   console.log("2. ingest simulated feed");
-  await api("/sports/ingest", {
-    method: "POST",
-    token,
-    body: { provider: "simulated" },
-  });
+  await tryIngest();
 
   console.log("3. find a live event with open markets");
   let event = null;
@@ -59,7 +69,7 @@ const main = async () => {
       )
     );
     if (!event) {
-      await api("/sports/ingest", { method: "POST", token, body: { provider: "simulated" } });
+      await tryIngest();
       await sleep(3000);
     }
   }
@@ -100,7 +110,7 @@ const main = async () => {
   let bet = placed.bet;
 
   while (bet.settlementStatus === "unsettled" && Date.now() < deadline) {
-    await api("/sports/ingest", { method: "POST", token, body: { provider: "simulated" } });
+    await tryIngest();
     await sleep(5000);
     bet = (await api(`/bets/${betId}`, { token })).bet;
     process.stdout.write(`   status=${bet.status}\r`);
@@ -113,8 +123,8 @@ const main = async () => {
   }
 
   console.log("6. ledger tail");
-  const { entries } = await api("/wallet/ledger?limit=5", { token });
-  for (const entry of entries || []) {
+  const { ledgerEntries } = await api("/wallet/ledger?limit=5", { token });
+  for (const entry of ledgerEntries || []) {
     console.log(
       `   ${entry.direction} ${entry.category} ${entry.amount} -> balanceAfter ${entry.balanceAfter}`
     );
