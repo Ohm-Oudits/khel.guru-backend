@@ -1,6 +1,7 @@
 import AuditLog from "../models/auditLog.model.js";
 import LedgerEntry from "../models/ledgerEntry.model.js";
 import Transaction from "../models/transaction.model.js";
+import WalletAccount from "../models/walletAccount.model.js";
 import {
   buildWalletOverview,
   createLedgerEntry,
@@ -10,6 +11,14 @@ import {
   serializeWalletAccount,
   syncLegacyBalance,
 } from "../services/walletPlatform.service.js";
+import { creditAvailable } from "../services/paymentSettlement.service.js";
+
+// The instant self-credit endpoints predate payment intents. They stay usable
+// for local development only; production traffic must use /deposit-intents
+// and /payout-requests.
+const isInstantCashierEnabled = () =>
+  process.env.PAYMENTS_ALLOW_INSTANT_CASHIER === "true" &&
+  process.env.NODE_ENV !== "production";
 
 const createAuditLog = async (req, action, entityId, metadata = {}) =>
   AuditLog.create({
@@ -65,6 +74,13 @@ export const getWalletAccounts = async (req, res, next) => {
 
 export const deposit = async (req, res, next) => {
   try {
+    if (!isInstantCashierEnabled()) {
+      return res.status(410).json({
+        error: "Instant cashier is disabled",
+        next: "/cashier/deposit-intents",
+      });
+    }
+
     const amount = normalizeAmount(req.body.amount);
     const method = String(req.body.method || "upi").trim() || "upi";
     const provider = String(req.body.provider || "manual").trim() || "manual";
@@ -74,10 +90,7 @@ export const deposit = async (req, res, next) => {
     }
 
     const accountsByType = await getAccountsByType(req.user._id);
-    const cashAccount = accountsByType.cash;
-
-    cashAccount.availableBalance += amount;
-    await cashAccount.save();
+    const cashAccount = await creditAvailable(accountsByType.cash._id, amount);
     await syncLegacyBalance(req.user._id, cashAccount.availableBalance);
 
     const transaction = await Transaction.create({
@@ -199,6 +212,13 @@ export const topUpDemoBalance = async (req, res, next) => {
 
 export const withdraw = async (req, res, next) => {
   try {
+    if (!isInstantCashierEnabled()) {
+      return res.status(410).json({
+        error: "Instant cashier is disabled",
+        next: "/cashier/payout-requests",
+      });
+    }
+
     const amount = normalizeAmount(req.body.amount);
 
     if (!amount) {
@@ -206,9 +226,19 @@ export const withdraw = async (req, res, next) => {
     }
 
     const accountsByType = await getAccountsByType(req.user._id);
-    const cashAccount = accountsByType.cash;
 
-    if (cashAccount.availableBalance < amount) {
+    // Guarded atomic debit: the balance-floor filter makes overdraw impossible
+    // under concurrent withdrawals.
+    const cashAccount = await WalletAccount.findOneAndUpdate(
+      {
+        _id: accountsByType.cash._id,
+        availableBalance: { $gte: amount },
+      },
+      { $inc: { availableBalance: -amount } },
+      { new: true }
+    );
+
+    if (!cashAccount) {
       await Transaction.create({
         userId: req.user._id,
         type: "withdraw",
@@ -216,15 +246,13 @@ export const withdraw = async (req, res, next) => {
         status: "failed",
         meta: {
           reason: "insufficient_balance",
-          walletAccountId: cashAccount._id,
+          walletAccountId: accountsByType.cash._id,
         },
       });
 
       return res.status(400).json({ error: "Insufficient balance" });
     }
 
-    cashAccount.availableBalance -= amount;
-    await cashAccount.save();
     await syncLegacyBalance(req.user._id, cashAccount.availableBalance);
 
     const transaction = await Transaction.create({

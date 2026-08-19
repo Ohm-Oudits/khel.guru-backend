@@ -24,6 +24,7 @@ import accountRoutes from "./routes/account.route.js";
 import securityRoutes from "./routes/security.route.js";
 import supportRoutes from "./routes/support.route.js";
 import adminRoutes from "./routes/admin.route.js";
+import webhookRoutes from "./routes/webhooks.route.js";
 
 import setupBaccaratSocket from "./socket/modules/baccarat/baccarat.socket.js";
 import setupBlackjackSocket from "./socket/modules/blackjack/blackjack.socket.js";
@@ -48,6 +49,10 @@ const app = express();
 
 // Trust proxy for rate limiting and security
 app.set("trust proxy", 1);
+
+// Webhooks need the raw request bytes for signature verification, so this
+// router must mount before the JSON body parsers consume the stream.
+app.use("/api/webhooks", webhookRoutes);
 
 // Body parsing middleware
 app.use(express.json({ limit: "10mb" }));
