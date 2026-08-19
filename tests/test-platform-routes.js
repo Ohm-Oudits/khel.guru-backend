@@ -101,10 +101,7 @@ expectRoute(sportRoutes, "/events", ["GET"]);
 expectRoute(sportRoutes, "/events/:eventId", ["GET"]);
 expectRoute(sportRoutes, "/events/:eventId/markets", ["GET"]);
 expectRoute(sportRoutes, "/ingest", ["POST"]);
-expectRoute(sportRoutes, "/", ["GET", "POST"]);
-expectRoute(sportRoutes, "/update/:id", ["PUT"]);
-expectRoute(sportRoutes, "/:id", ["DELETE"]);
-expectRoute(sportRoutes, "/all", ["GET"]);
+expectRoute(sportRoutes, "/usage", ["GET"]);
 
 expectRoute(supportRoutes, "/overview", ["GET"]);
 expectRoute(supportRoutes, "/tickets", ["GET", "POST"]);
@@ -133,7 +130,7 @@ assert.equal(adminRoutes.length, 11, "Admin router surface changed unexpectedly"
 assert.equal(betsRoutes.length, 4, "Bets router surface changed unexpectedly");
 assert.equal(gameRoutes.length, 11, "Game router surface changed unexpectedly");
 assert.equal(securityRoutes.length, 3, "Security router surface changed unexpectedly");
-assert.equal(sportRoutes.length, 11, "Sports router surface changed unexpectedly");
+assert.equal(sportRoutes.length, 8, "Sports router surface changed unexpectedly");
 assert.equal(supportRoutes.length, 2, "Support router surface changed unexpectedly");
 assert.equal(walletRoutes.length, 16, "Wallet router surface changed unexpectedly");
 assert.equal(webhooksRoutes.length, 1, "Webhooks router surface changed unexpectedly");

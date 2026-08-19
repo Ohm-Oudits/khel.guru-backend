@@ -10,6 +10,36 @@ const selectionSchema = new mongoose.Schema(
       enum: ["open", "suspended", "settled"],
       default: "open",
     },
+    // Denormalized current price so list reads never touch the snapshot
+    // collection. Refreshed by ingest only when odds actually change.
+    priceDecimal: { type: Number, default: null },
+    priceUpdatedAt: { type: Date, default: null },
+  },
+  { _id: false }
+);
+
+const latestOddsSchema = new mongoose.Schema(
+  {
+    bookmakerKey: { type: String, required: true, trim: true },
+    bookmakerTitle: { type: String, default: "", trim: true },
+    region: { type: String, default: "", trim: true },
+    capturedAt: { type: Date, default: null },
+    // sha1 over canonical outcomes; equal signature = no snapshot insert
+    signature: { type: String, default: "" },
+    outcomes: {
+      type: [
+        new mongoose.Schema(
+          {
+            key: { type: String, required: true, trim: true },
+            name: { type: String, default: "", trim: true },
+            priceDecimal: { type: Number, required: true },
+            line: { type: Number, default: null },
+          },
+          { _id: false }
+        ),
+      ],
+      default: [],
+    },
   },
   { _id: false }
 );
@@ -51,6 +81,10 @@ const marketSchema = new mongoose.Schema(
     },
     selections: {
       type: [selectionSchema],
+      default: [],
+    },
+    latestOdds: {
+      type: [latestOddsSchema],
       default: [],
     },
     bookmakerCount: {

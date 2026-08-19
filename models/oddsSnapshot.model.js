@@ -71,5 +71,13 @@ oddsSnapshotSchema.index(
   { unique: true }
 );
 
+// Snapshots are insert-on-change history; current prices live on the Market
+// document and bets copy oddsSource by value, so expiring old rows is safe.
+const SNAPSHOT_TTL_DAYS = Number(process.env.SPORTSBOOK_SNAPSHOT_TTL_DAYS || 30);
+oddsSnapshotSchema.index(
+  { createdAt: 1 },
+  { expireAfterSeconds: SNAPSHOT_TTL_DAYS * 86400 }
+);
+
 const OddsSnapshot = mongoose.model("OddsSnapshot", oddsSnapshotSchema);
 export default OddsSnapshot;

@@ -10,8 +10,19 @@ const MARKET_TITLE_MAP = {
   outrights: "Outright Winner",
 };
 
-const normalizeSelectionKey = (name, line = null) =>
+export const normalizeSelectionKey = (name, line = null) =>
   `${String(name).toLowerCase().replace(/[^a-z0-9]+/g, "_")}${line !== null ? `_${line}` : ""}`;
+
+const toNumberOrNull = (value) => {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const readUsageHeaders = (headers = {}) => ({
+  used: toNumberOrNull(headers["x-requests-used"]),
+  remaining: toNumberOrNull(headers["x-requests-remaining"]),
+  cost: toNumberOrNull(headers["x-requests-last"]),
+});
 
 const normalizeEventStatus = (commenceTime) => {
   const start = new Date(commenceTime).getTime();
@@ -19,7 +30,7 @@ const normalizeEventStatus = (commenceTime) => {
   return start <= Date.now() ? "live" : "upcoming";
 };
 
-export const mapTheOddsApiOddsResponse = (events, sportKey) =>
+export const mapTheOddsApiOddsResponse = (events, sportKey, regions = "") =>
   events.map((event) => {
     const marketMap = new Map();
 
@@ -62,7 +73,9 @@ export const mapTheOddsApiOddsResponse = (events, sportKey) =>
         existing.snapshots.push({
           bookmakerKey: bookmaker.key,
           bookmakerTitle: bookmaker.title,
-          region: "",
+          // The Odds API does not attribute a region per bookmaker, so stamp
+          // the requested regions string on every snapshot.
+          region: regions || "",
           capturedAt: new Date().toISOString(),
           providerLastUpdate: bookmaker.last_update || null,
           outcomes,
@@ -107,8 +120,8 @@ export const fetchTheOddsApiSports = async () => {
 
 export const fetchTheOddsApiOdds = async ({
   sportKey,
-  regions = "uk,eu",
-  markets = "h2h,spreads,totals",
+  regions,
+  markets,
   oddsFormat = "decimal",
 }) => {
   const apiKey = process.env.THE_ODDS_API_KEY;
@@ -117,18 +130,24 @@ export const fetchTheOddsApiOdds = async ({
     throw new Error("THE_ODDS_API_KEY is not configured");
   }
 
+  const requestedRegions = regions || process.env.THE_ODDS_API_REGIONS || "uk";
+  const requestedMarkets = markets || process.env.THE_ODDS_API_MARKETS || "h2h,totals";
+
   const response = await axios.get(
     `${THE_ODDS_API_BASE_URL}/sports/${sportKey}/odds`,
     {
       params: {
         apiKey,
-        regions,
-        markets,
+        regions: requestedRegions,
+        markets: requestedMarkets,
         oddsFormat,
         dateFormat: "iso",
       },
     }
   );
 
-  return mapTheOddsApiOddsResponse(response.data, sportKey);
+  return {
+    items: mapTheOddsApiOddsResponse(response.data, sportKey, requestedRegions),
+    usage: readUsageHeaders(response.headers),
+  };
 };

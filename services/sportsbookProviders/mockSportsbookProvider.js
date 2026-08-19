@@ -1,6 +1,7 @@
-const now = Date.now();
+export const fetchMockSportsbookFeed = async () => {
+  const now = Date.now();
 
-export const fetchMockSportsbookFeed = async () => [
+  return [
   {
     provider: "mock",
     providerEventId: "mock-cricket-001",
@@ -84,4 +85,5 @@ export const fetchMockSportsbookFeed = async () => [
       },
     ],
   },
-];
+  ];
+};

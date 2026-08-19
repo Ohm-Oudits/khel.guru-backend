@@ -8,6 +8,8 @@ import {
   discoverSportsbookProviderSports,
   runSportsbookIngest,
 } from "../services/sportsbookIngest.service.js";
+import { getUsage } from "../services/providerUsage.service.js";
+import { getSchedulerStatus } from "../services/sportsbookScheduler.service.js";
 
 const parseLimit = (value, fallback = 20) => {
   const parsed = Number.parseInt(value, 10);
@@ -141,7 +143,28 @@ export const ingestSportsbookFeed = async (req, res, next) => {
 
     res.status(201).json({
       message: "Sportsbook feed ingested successfully",
-      ...result,
+      provider: result.provider,
+      sportKey: result.sportKey,
+      ingestedCount: result.ingestedCount,
+      eventIds: result.eventIds,
+      changedEventCount: result.changes.length,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getSportsbookUsage = async (req, res, next) => {
+  try {
+    const usage = await getUsage("the-odds-api");
+
+    res.json({
+      usage,
+      budget: {
+        monthly: Number(process.env.THE_ODDS_API_MONTHLY_BUDGET || 500),
+        reserve: Number(process.env.THE_ODDS_API_RESERVE_CREDITS || 50),
+      },
+      scheduler: getSchedulerStatus(),
     });
   } catch (error) {
     next(error);

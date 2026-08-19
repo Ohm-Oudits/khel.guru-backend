@@ -7,6 +7,13 @@ export const SPORTSBOOK_PROVIDERS = [
     requiresToken: false,
   },
   {
+    key: "simulated",
+    title: "Simulated Live",
+    type: "sandbox",
+    sports: ["cricket", "football", "tennis", "badminton"],
+    requiresToken: false,
+  },
+  {
     key: "the-odds-api",
     title: "The Odds API",
     type: "odds",
@@ -57,3 +64,26 @@ export const getSportsbookCatalog = () => ({
   sports: SPORTSBOOK_CATALOG,
   providers: SPORTSBOOK_PROVIDERS,
 });
+
+const SPORT_GROUP_PREFIX_RULES = [
+  ["cricket_", "cricket"],
+  ["soccer_", "football"],
+  ["tennis_", "tennis"],
+  ["badminton_", "badminton"],
+];
+
+export const resolveSportGroup = (providerSportKey = "") => {
+  const key = String(providerSportKey).toLowerCase().trim();
+
+  if (SPORTSBOOK_CATALOG.some((sport) => sport.sportKey === key)) {
+    return key;
+  }
+
+  for (const [prefix, group] of SPORT_GROUP_PREFIX_RULES) {
+    if (key.startsWith(prefix)) {
+      return group;
+    }
+  }
+
+  return key;
+};

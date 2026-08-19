@@ -9,6 +9,10 @@ import http from "http";
 import { setupSocket } from "./socket/socket.js";
 import { assertCryptoBootSafety } from "./services/cryptoWallet.service.js";
 import { startCryptoDepositWatcher } from "./services/cryptoDepositWatcher.service.js";
+import {
+  startSportsbookScheduler,
+  stopSportsbookScheduler,
+} from "./services/sportsbookScheduler.service.js";
 
 // Import middleware
 import { errorHandler, notFound } from "./middleware/errorHandler.js";
@@ -170,6 +174,10 @@ mongoose
       startCryptoDepositWatcher().catch((error) => {
         console.error("Crypto deposit watcher failed to start:", error.message);
       });
+
+      if (process.env.SPORTSBOOK_SCHEDULER_ENABLED === "true") {
+        startSportsbookScheduler();
+      }
     }
   })
   .catch((error) => {
@@ -219,3 +227,10 @@ setupSlideSocket();
 setupTowerSocket();
 setupTwistSocket();
 setupWheelSocket();
+
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.on(signal, () => {
+    stopSportsbookScheduler();
+    process.exit(0);
+  });
+}

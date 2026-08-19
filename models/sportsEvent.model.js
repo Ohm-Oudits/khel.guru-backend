@@ -32,6 +32,14 @@ const sportsEventSchema = new mongoose.Schema(
       trim: true,
       index: true,
     },
+    // Canonical grouping (cricket/football/tennis/badminton) so provider keys
+    // like cricket_ipl and soccer_epl map onto frontend routes and socket rooms.
+    sportGroup: {
+      type: String,
+      default: "",
+      trim: true,
+      index: true,
+    },
     sportName: {
       type: String,
       required: true,

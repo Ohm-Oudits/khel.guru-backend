@@ -1,18 +1,12 @@
 import express from "express";
 import {
-  createSport,
-  deleteSport,
-  findSport,
-  findSports,
-  updateSport,
-} from "../controllers/sport.controller.js";
-import {
   getProviderSportsCatalog,
   getSportsbookCatalog,
   getSportsbookEvent,
   getSportsbookEventMarkets,
   getSportsbookEvents,
   getSportsbookProviders,
+  getSportsbookUsage,
   ingestSportsbookFeed,
 } from "../controllers/sportsbook.controller.js";
 import { requireRole } from "../middleware/requireRole.js";
@@ -37,11 +31,11 @@ router.post(
   requireRole("admin", "support"),
   ingestSportsbookFeed
 );
-
-router.post("/", createSport);
-router.put("/update/:id", updateSport);
-router.delete("/:id", deleteSport);
-router.get("/", findSport);
-router.get("/all", findSports);
+router.get(
+  "/usage",
+  verifyToken,
+  requireRole("admin", "support"),
+  getSportsbookUsage
+);
 
 export default router;

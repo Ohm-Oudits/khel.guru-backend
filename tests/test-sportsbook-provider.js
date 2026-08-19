@@ -35,7 +35,8 @@ const response = mapTheOddsApiOddsResponse(
       ],
     },
   ],
-  "cricket_ipl"
+  "cricket_ipl",
+  "uk"
 );
 
 assert.equal(response.length, 1, "Expected a single normalized event");
@@ -50,6 +51,11 @@ assert.equal(h2hMarket.title, "Match Winner");
 assert.equal(h2hMarket.selections.length, 2);
 assert.equal(h2hMarket.snapshots.length, 1);
 assert.equal(h2hMarket.snapshots[0].outcomes[0].key, "mumbai_indians");
+assert.equal(
+  h2hMarket.snapshots[0].region,
+  "uk",
+  "Expected requested regions to be stamped on snapshots"
+);
 
 const totalsMarket = response[0].markets.find(
   (market) => market.marketType === "totals"
