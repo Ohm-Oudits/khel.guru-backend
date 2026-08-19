@@ -12,6 +12,7 @@ import {
 import {
   getCryptoDepositAddresses,
   listMyCryptoDeposits,
+  simulateCryptoDeposit,
 } from "../controllers/cryptoWallet.controller.js";
 import { apiLimiter } from "../middleware/rateLimiter.js";
 import { verifyToken } from "../middleware/userTokenCheck.js";
@@ -24,6 +25,7 @@ router.use(verifyToken);
 router.get("/balance", apiLimiter, getBalance);
 router.get("/crypto/addresses", apiLimiter, getCryptoDepositAddresses);
 router.get("/crypto/deposits", apiLimiter, listMyCryptoDeposits);
+router.post("/crypto/deposits/simulate", apiLimiter, simulateCryptoDeposit);
 router.get("/accounts", apiLimiter, getWalletAccounts);
 router.get("/ledger", apiLimiter, getWalletLedger);
 router.post("/deposit", apiLimiter, deposit);

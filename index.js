@@ -8,6 +8,7 @@ import morgan from "morgan";
 import http from "http";
 import { setupSocket } from "./socket/socket.js";
 import { assertCryptoBootSafety } from "./services/cryptoWallet.service.js";
+import { startCryptoDepositWatcher } from "./services/cryptoDepositWatcher.service.js";
 
 // Import middleware
 import { errorHandler, notFound } from "./middleware/errorHandler.js";
@@ -159,6 +160,12 @@ mongoose
     server.listen(process.env.PORT || 8080, () => {
       console.log(`Server running on port ${process.env.PORT || 8080} 🔥`);
     });
+
+    if (process.env.NODE_ENV !== "test") {
+      startCryptoDepositWatcher().catch((error) => {
+        console.error("Crypto deposit watcher failed to start:", error.message);
+      });
+    }
   })
   .catch((error) => {
     console.error("Error connecting to MongoDB:", error.message);

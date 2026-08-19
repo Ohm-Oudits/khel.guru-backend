@@ -113,6 +113,7 @@ expectRoute(walletRoutes, "/vault/transfer", ["POST"]);
 expectRoute(walletRoutes, "/transactions", ["GET"]);
 expectRoute(walletRoutes, "/crypto/addresses", ["GET"]);
 expectRoute(walletRoutes, "/crypto/deposits", ["GET"]);
+expectRoute(walletRoutes, "/crypto/deposits/simulate", ["POST"]);
 
 assert.equal(accountRoutes.length, 5, "Account router surface changed unexpectedly");
 assert.equal(adminRoutes.length, 7, "Admin router surface changed unexpectedly");
@@ -121,6 +122,6 @@ assert.equal(gameRoutes.length, 11, "Game router surface changed unexpectedly");
 assert.equal(securityRoutes.length, 3, "Security router surface changed unexpectedly");
 assert.equal(sportRoutes.length, 11, "Sports router surface changed unexpectedly");
 assert.equal(supportRoutes.length, 2, "Support router surface changed unexpectedly");
-assert.equal(walletRoutes.length, 10, "Wallet router surface changed unexpectedly");
+assert.equal(walletRoutes.length, 11, "Wallet router surface changed unexpectedly");
 
 console.log("Platform route smoke test passed");
