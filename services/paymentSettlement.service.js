@@ -66,6 +66,29 @@ const emitDepositIntentUpdate = (intent, balance = null) => {
   });
 };
 
+export const serializePayoutRequest = (payout) => ({
+  id: payout._id,
+  amount: payout.amount,
+  currency: payout.currency,
+  method: payout.method,
+  destination: payout.destination,
+  status: payout.status,
+  rejectedReason: payout.rejectedReason,
+  paidAt: payout.paidAt,
+  createdAt: payout.createdAt,
+});
+
+export const emitPayoutRequestUpdate = (payout, balance = null) => {
+  if (!io) return;
+
+  io.to(`user:${payout.userId}`).emit("wallet:payout_request", {
+    payoutId: payout._id,
+    status: payout.status,
+    amount: payout.amount,
+    ...(balance === null ? {} : { balance }),
+  });
+};
+
 export const serializePaymentIntent = (intent) => ({
   id: intent._id,
   amount: intent.amount,

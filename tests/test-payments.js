@@ -198,5 +198,47 @@ const allowed = await assertDepositWithinLimits(user._id, 200, responsibleGaming
 assert.equal(allowed, null);
 console.log("deposit limits block over-limit intents and allow within-limit ones");
 
+// --- Payout hold / release / debit invariants ---
+const { placeHold, releaseHold, debitLocked } = await import(
+  "../services/paymentSettlement.service.js"
+);
+
+// Reset the cash account to a known state: 1000 available, 0 locked.
+await WalletAccount.updateOne(
+  { _id: cashAccount._id },
+  { $set: { availableBalance: 1000, lockedBalance: 0 } }
+);
+
+// Hold 400: available 600, locked 400.
+let held = await placeHold(cashAccount._id, 400);
+assert.equal(held.availableBalance, 600);
+assert.equal(held.lockedBalance, 400);
+
+// Insufficient hold (2000) mutates nothing.
+const overdraw = await placeHold(cashAccount._id, 2000);
+assert.equal(overdraw, null);
+account = await WalletAccount.findById(cashAccount._id);
+assert.equal(account.availableBalance, 600);
+assert.equal(account.lockedBalance, 400);
+
+// Release restores fully.
+const released = await releaseHold(cashAccount._id, 400);
+assert.equal(released.availableBalance, 1000);
+assert.equal(released.lockedBalance, 0);
+
+// Approve path: hold 400 then debit locked exactly once.
+held = await placeHold(cashAccount._id, 400);
+const debited = await debitLocked(cashAccount._id, 400);
+assert.equal(debited.availableBalance, 600);
+assert.equal(debited.lockedBalance, 0);
+
+// A second debit of the same hold finds no locked funds and mutates nothing.
+const doubleDebit = await debitLocked(cashAccount._id, 400);
+assert.equal(doubleDebit, null);
+account = await WalletAccount.findById(cashAccount._id);
+assert.equal(account.availableBalance, 600);
+assert.equal(account.lockedBalance, 0);
+console.log("payout hold, release, and locked-debit invariants hold");
+
 await mongoose.disconnect();
 await mongod.stop();

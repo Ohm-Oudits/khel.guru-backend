@@ -68,6 +68,10 @@ expectRoute(adminRoutes, "/kyc/:userId/review", ["POST"]);
 expectRoute(adminRoutes, "/self-exclusions", ["GET"]);
 expectRoute(adminRoutes, "/crypto/deposits", ["GET"]);
 expectRoute(adminRoutes, "/crypto/deposits/:depositId/recheck", ["POST"]);
+expectRoute(adminRoutes, "/payouts/queue", ["GET"]);
+expectRoute(adminRoutes, "/payouts/:payoutId/claim", ["POST"]);
+expectRoute(adminRoutes, "/payouts/:payoutId/approve", ["POST"]);
+expectRoute(adminRoutes, "/payouts/:payoutId/reject", ["POST"]);
 
 expectRoute(betsRoutes, "/single", ["POST"]);
 expectRoute(betsRoutes, "/history", ["GET"]);
@@ -119,17 +123,19 @@ expectRoute(walletRoutes, "/crypto/deposits/simulate", ["POST"]);
 expectRoute(walletRoutes, "/deposit-intents", ["GET", "POST"]);
 expectRoute(walletRoutes, "/deposit-intents/:intentId", ["GET"]);
 expectRoute(walletRoutes, "/deposit-intents/:intentId/simulate", ["POST"]);
+expectRoute(walletRoutes, "/payout-requests", ["GET", "POST"]);
+expectRoute(walletRoutes, "/payout-requests/:payoutId/cancel", ["POST"]);
 
 expectRoute(webhooksRoutes, "/payments/:provider", ["POST"]);
 
 assert.equal(accountRoutes.length, 5, "Account router surface changed unexpectedly");
-assert.equal(adminRoutes.length, 7, "Admin router surface changed unexpectedly");
+assert.equal(adminRoutes.length, 11, "Admin router surface changed unexpectedly");
 assert.equal(betsRoutes.length, 4, "Bets router surface changed unexpectedly");
 assert.equal(gameRoutes.length, 11, "Game router surface changed unexpectedly");
 assert.equal(securityRoutes.length, 3, "Security router surface changed unexpectedly");
 assert.equal(sportRoutes.length, 11, "Sports router surface changed unexpectedly");
 assert.equal(supportRoutes.length, 2, "Support router surface changed unexpectedly");
-assert.equal(walletRoutes.length, 14, "Wallet router surface changed unexpectedly");
+assert.equal(walletRoutes.length, 16, "Wallet router surface changed unexpectedly");
 assert.equal(webhooksRoutes.length, 1, "Webhooks router surface changed unexpectedly");
 
 console.log("Platform route smoke test passed");

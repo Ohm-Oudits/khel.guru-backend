@@ -15,9 +15,12 @@ import {
   simulateCryptoDeposit,
 } from "../controllers/cryptoWallet.controller.js";
 import {
+  cancelPayoutRequest,
   createDepositIntent,
+  createPayoutRequest,
   getDepositIntent,
   listDepositIntents,
+  listPayoutRequests,
   simulateDepositIntent,
 } from "../controllers/cashier.controller.js";
 import { apiLimiter } from "../middleware/rateLimiter.js";
@@ -39,6 +42,9 @@ router.post("/deposit-intents", apiLimiter, createDepositIntent);
 router.get("/deposit-intents", apiLimiter, listDepositIntents);
 router.get("/deposit-intents/:intentId", apiLimiter, getDepositIntent);
 router.post("/deposit-intents/:intentId/simulate", apiLimiter, simulateDepositIntent);
+router.post("/payout-requests", apiLimiter, createPayoutRequest);
+router.get("/payout-requests", apiLimiter, listPayoutRequests);
+router.post("/payout-requests/:payoutId/cancel", apiLimiter, cancelPayoutRequest);
 router.post("/demo/top-up", apiLimiter, topUpDemoBalance);
 router.post("/withdraw", apiLimiter, withdraw);
 router.post("/vault/transfer", apiLimiter, transferVaultFunds);

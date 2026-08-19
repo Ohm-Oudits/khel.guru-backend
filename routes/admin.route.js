@@ -1,11 +1,15 @@
 import express from "express";
 import {
+  approvePayoutRequest,
+  claimPayoutRequest,
   getActiveSelfExclusions,
   getAdminOverview,
   getAdminQueues,
   getKycReviewQueue,
+  getPayoutQueue,
   listAllCryptoDeposits,
   recheckCryptoDeposit,
+  rejectPayoutRequest,
   reviewKycProfile,
 } from "../controllers/admin.controller.js";
 import { apiLimiter } from "../middleware/rateLimiter.js";
@@ -23,5 +27,9 @@ router.post("/kyc/:userId/review", apiLimiter, reviewKycProfile);
 router.get("/self-exclusions", apiLimiter, getActiveSelfExclusions);
 router.get("/crypto/deposits", apiLimiter, listAllCryptoDeposits);
 router.post("/crypto/deposits/:depositId/recheck", apiLimiter, recheckCryptoDeposit);
+router.get("/payouts/queue", apiLimiter, getPayoutQueue);
+router.post("/payouts/:payoutId/claim", apiLimiter, claimPayoutRequest);
+router.post("/payouts/:payoutId/approve", apiLimiter, requireRole("admin"), approvePayoutRequest);
+router.post("/payouts/:payoutId/reject", apiLimiter, requireRole("admin"), rejectPayoutRequest);
 
 export default router;

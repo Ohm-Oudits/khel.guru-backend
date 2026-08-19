@@ -1,19 +1,28 @@
 import crypto from "crypto";
 
 import AuditLog from "../models/auditLog.model.js";
+import KycProfile from "../models/kycProfile.model.js";
 import PaymentIntent from "../models/paymentIntent.model.js";
+import PayoutRequest from "../models/payoutRequest.model.js";
 import ResponsibleGamingLimit from "../models/responsibleGamingLimit.model.js";
 import SelfExclusion from "../models/selfExclusion.model.js";
+import Transaction from "../models/transaction.model.js";
 import { getPaymentProvider } from "../services/paymentProviders/index.js";
 import {
+  emitPayoutRequestUpdate,
   expireStaleIntent,
+  placeHold,
+  releaseHold,
   serializePaymentIntent,
+  serializePayoutRequest,
   settleDepositIntent,
 } from "../services/paymentSettlement.service.js";
 import {
+  createLedgerEntry,
   ensureDefaultWalletAccounts,
   mapWalletAccountsByType,
   normalizeAmount,
+  syncLegacyBalance,
 } from "../services/walletPlatform.service.js";
 
 const DEPOSIT_METHODS = ["upi", "bank_transfer", "card"];
@@ -344,6 +353,235 @@ export const simulateDepositIntent = async (req, res, next) => {
       intent: serializePaymentIntent(result.intent),
       ...(result.balance === undefined ? {} : { balance: result.balance }),
       ...(result.duplicate ? { duplicate: true } : {}),
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+const VPA_PATTERN = /^[\w.\-]{2,64}@[a-z][a-z0-9]{1,31}$/i;
+const ACCOUNT_NUMBER_PATTERN = /^\d{9,18}$/;
+const IFSC_PATTERN = /^[A-Z]{4}0[A-Z0-9]{6}$/;
+
+const getMinPayout = () => Number(process.env.PAYMENTS_MIN_DEPOSIT) || 10;
+const getMaxPayout = () => Number(process.env.PAYMENTS_MAX_DEPOSIT) || 100000;
+
+const validatePayoutDestination = (method, destination = {}) => {
+  if (method === "upi") {
+    if (!VPA_PATTERN.test(String(destination.vpa || "").trim())) {
+      return "A valid UPI ID is required for UPI payouts";
+    }
+    return null;
+  }
+
+  if (!ACCOUNT_NUMBER_PATTERN.test(String(destination.accountNumber || "").trim())) {
+    return "A valid bank account number is required";
+  }
+  if (!IFSC_PATTERN.test(String(destination.ifsc || "").trim().toUpperCase())) {
+    return "A valid IFSC code is required";
+  }
+  return null;
+};
+
+export const createPayoutRequest = async (req, res, next) => {
+  try {
+    const eligibility = await assertCashierEligibility(req);
+    if (eligibility.status) {
+      return res.status(eligibility.status).json(eligibility.body);
+    }
+
+    // Payouts require verified identity before any hold is placed.
+    const kycProfile = await KycProfile.findOne({ userId: req.user._id });
+    if (kycProfile?.status !== "verified") {
+      return res.status(403).json({
+        error: "KYC verification is required before requesting a payout",
+        code: "kyc_required",
+      });
+    }
+
+    const amount = normalizeAmount(req.body.amount);
+    if (!amount) {
+      return res.status(400).json({ error: "Invalid amount" });
+    }
+
+    if (amount < getMinPayout() || amount > getMaxPayout()) {
+      return res.status(400).json({
+        error: `Payout must be between ${getMinPayout()} and ${getMaxPayout()}`,
+      });
+    }
+
+    const method = req.body.method === "bank_transfer" ? "bank_transfer" : "upi";
+    const destination = req.body.destination || {};
+    const destinationError = validatePayoutDestination(method, destination);
+    if (destinationError) {
+      return res.status(400).json({ error: destinationError });
+    }
+
+    const idempotencyKey =
+      req.get("Idempotency-Key") ||
+      String(req.body.idempotencyKey || "").trim() ||
+      null;
+
+    if (idempotencyKey) {
+      const existing = await PayoutRequest.findOne({
+        userId: req.user._id,
+        idempotencyKey,
+      });
+
+      if (existing) {
+        return res
+          .status(200)
+          .json({ payout: serializePayoutRequest(existing), replayed: true });
+      }
+    }
+
+    const accounts = await ensureDefaultWalletAccounts(req.user._id);
+    const cashAccount = mapWalletAccountsByType(accounts).cash;
+
+    const heldAccount = await placeHold(cashAccount._id, amount);
+    if (!heldAccount) {
+      return res.status(400).json({ error: "Insufficient balance" });
+    }
+
+    try {
+      const payout = await PayoutRequest.create({
+        userId: req.user._id,
+        walletAccountId: cashAccount._id,
+        amount,
+        currency: cashAccount.currency,
+        method,
+        destination: {
+          vpa: String(destination.vpa || "").trim(),
+          accountNumber: String(destination.accountNumber || "").trim(),
+          ifsc: String(destination.ifsc || "").trim().toUpperCase(),
+          accountHolderName: String(destination.accountHolderName || "").trim(),
+        },
+        idempotencyKey: idempotencyKey || crypto.randomUUID(),
+      });
+
+      const transaction = await Transaction.create({
+        userId: req.user._id,
+        type: "withdraw",
+        amount,
+        status: "pending",
+        meta: {
+          walletAccountId: cashAccount._id,
+          method,
+          payoutRequestId: payout._id,
+          source: "cashier_payout",
+        },
+      });
+
+      const holdEntry = await createLedgerEntry({
+        userId: req.user._id,
+        walletAccountId: cashAccount._id,
+        direction: "hold",
+        category: "withdrawal",
+        amount,
+        balanceAfter: heldAccount.availableBalance,
+        description: "Funds held pending payout review",
+        referenceType: "PayoutRequest",
+        referenceId: payout._id,
+        metadata: {
+          stage: "hold",
+          lockedAfter: heldAccount.lockedBalance,
+          transactionId: transaction._id,
+        },
+      });
+
+      await PayoutRequest.updateOne(
+        { _id: payout._id },
+        { $set: { holdLedgerEntryId: holdEntry._id, transactionId: transaction._id } }
+      );
+
+      await syncLegacyBalance(req.user._id, heldAccount.availableBalance);
+      await createAuditLog(req, "cashier.payout_request.created", payout._id, {
+        amount,
+        method,
+      });
+
+      res.status(201).json({
+        payout: serializePayoutRequest(payout),
+        balance: heldAccount.availableBalance,
+      });
+    } catch (creationError) {
+      // Compensation: never leave funds locked for a payout that failed to
+      // materialize.
+      await releaseHold(cashAccount._id, amount);
+      throw creationError;
+    }
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const listPayoutRequests = async (req, res, next) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 20, 100);
+    const payouts = await PayoutRequest.find({ userId: req.user._id })
+      .sort({ createdAt: -1 })
+      .limit(limit);
+
+    res.json({ payouts: payouts.map(serializePayoutRequest) });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const cancelPayoutRequest = async (req, res, next) => {
+  try {
+    const payout = await PayoutRequest.findOneAndUpdate(
+      {
+        _id: req.params.payoutId,
+        userId: req.user._id,
+        status: "requested",
+      },
+      { $set: { status: "rejected", rejectedReason: "cancelled_by_user" } },
+      { new: true }
+    );
+
+    if (!payout) {
+      return res.status(409).json({
+        error: "Payout can no longer be cancelled",
+      });
+    }
+
+    const account = await releaseHold(payout.walletAccountId, payout.amount);
+
+    const releaseEntry = await createLedgerEntry({
+      userId: req.user._id,
+      walletAccountId: payout.walletAccountId,
+      direction: "release",
+      category: "withdrawal",
+      amount: payout.amount,
+      balanceAfter: account.availableBalance,
+      description: "Payout hold released after cancellation",
+      referenceType: "PayoutRequest",
+      referenceId: payout._id,
+      metadata: { stage: "release", lockedAfter: account.lockedBalance },
+    });
+
+    await PayoutRequest.updateOne(
+      { _id: payout._id },
+      { $set: { releaseLedgerEntryId: releaseEntry._id } }
+    );
+
+    if (payout.transactionId) {
+      await Transaction.updateOne(
+        { _id: payout.transactionId },
+        { $set: { status: "failed", "meta.reason": "cancelled" } }
+      );
+    }
+
+    await syncLegacyBalance(req.user._id, account.availableBalance);
+    await createAuditLog(req, "cashier.payout_request.cancelled", payout._id, {
+      amount: payout.amount,
+    });
+    emitPayoutRequestUpdate(payout, account.availableBalance);
+
+    res.json({
+      payout: serializePayoutRequest(payout),
+      balance: account.availableBalance,
     });
   } catch (err) {
     next(err);

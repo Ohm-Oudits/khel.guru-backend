@@ -4,6 +4,17 @@ import CryptoDeposit from "../models/cryptoDeposit.model.js";
 import { recheckDeposit } from "../services/cryptoWallet.service.js";
 import KycProfile from "../models/kycProfile.model.js";
 import LedgerEntry from "../models/ledgerEntry.model.js";
+import PayoutRequest from "../models/payoutRequest.model.js";
+import Transaction from "../models/transaction.model.js";
+import {
+  debitLocked,
+  emitPayoutRequestUpdate,
+  releaseHold,
+} from "../services/paymentSettlement.service.js";
+import {
+  createLedgerEntry,
+  syncLegacyBalance,
+} from "../services/walletPlatform.service.js";
 import ResponsibleGamingLimit from "../models/responsibleGamingLimit.model.js";
 import SelfExclusion from "../models/selfExclusion.model.js";
 import SupportTicket from "../models/supportTicket.model.js";
@@ -274,5 +285,232 @@ export const recheckCryptoDeposit = async (req, res, next) => {
     });
   } catch (error) {
     next(error);
+  }
+};
+
+export const getPayoutQueue = async (req, res, next) => {
+  try {
+    const status = String(req.query.status || "requested").trim();
+    const allowedStatuses = [
+      "requested",
+      "under_review",
+      "approved",
+      "paid",
+      "rejected",
+      "failed",
+    ];
+
+    if (!allowedStatuses.includes(status)) {
+      return res.status(400).json({ error: "Invalid payout status filter" });
+    }
+
+    const payouts = await PayoutRequest.find({ status })
+      .sort({ createdAt: 1 })
+      .limit(100)
+      .populate("userId", "username email accountUid");
+
+    res.json({ status, count: payouts.length, payouts });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const claimPayoutRequest = async (req, res, next) => {
+  try {
+    const payout = await PayoutRequest.findOneAndUpdate(
+      { _id: req.params.payoutId, status: "requested" },
+      {
+        $set: {
+          status: "under_review",
+          "review.reviewedBy": req.user._id,
+          "review.reviewedAt": new Date(),
+        },
+      },
+      { new: true }
+    );
+
+    if (!payout) {
+      return res
+        .status(409)
+        .json({ error: "Payout is not available to claim" });
+    }
+
+    await createAdminAuditLog(
+      req,
+      "admin.payout.claimed",
+      "PayoutRequest",
+      payout._id,
+      { amount: payout.amount }
+    );
+
+    res.json({ payout });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const approvePayoutRequest = async (req, res, next) => {
+  try {
+    const payout = await PayoutRequest.findOneAndUpdate(
+      {
+        _id: req.params.payoutId,
+        status: { $in: ["requested", "under_review"] },
+      },
+      {
+        $set: {
+          status: "approved",
+          "review.reviewedBy": req.user._id,
+          "review.reviewedAt": new Date(),
+          "review.notes": String(req.body.notes || "").trim(),
+        },
+      },
+      { new: true }
+    );
+
+    if (!payout) {
+      return res
+        .status(409)
+        .json({ error: "Payout is not in a reviewable state" });
+    }
+
+    const account = await debitLocked(payout.walletAccountId, payout.amount);
+
+    if (!account) {
+      // Locked funds did not cover the payout — ledger drift; surface loudly.
+      await PayoutRequest.updateOne(
+        { _id: payout._id, status: "approved" },
+        { $set: { status: "failed", rejectedReason: "locked_balance_mismatch" } }
+      );
+
+      await createAdminAuditLog(
+        req,
+        "admin.payout.failed_locked_mismatch",
+        "PayoutRequest",
+        payout._id,
+        { amount: payout.amount }
+      );
+
+      return res
+        .status(500)
+        .json({ error: "Locked balance mismatch, payout marked failed" });
+    }
+
+    const debitEntry = await createLedgerEntry({
+      userId: payout.userId,
+      walletAccountId: payout.walletAccountId,
+      direction: "debit",
+      category: "withdrawal",
+      amount: payout.amount,
+      balanceAfter: account.availableBalance,
+      description: "Payout paid from held funds",
+      referenceType: "PayoutRequest",
+      referenceId: payout._id,
+      metadata: { stage: "payout", lockedAfter: account.lockedBalance },
+    });
+
+    const paidPayout = await PayoutRequest.findOneAndUpdate(
+      { _id: payout._id, status: "approved" },
+      {
+        $set: {
+          status: "paid",
+          paidAt: new Date(),
+          debitLedgerEntryId: debitEntry._id,
+        },
+      },
+      { new: true }
+    );
+
+    if (payout.transactionId) {
+      await Transaction.updateOne(
+        { _id: payout.transactionId },
+        { $set: { status: "success" } }
+      );
+    }
+
+    await createAdminAuditLog(
+      req,
+      "admin.payout.approved",
+      "PayoutRequest",
+      payout._id,
+      { amount: payout.amount, debitLedgerEntryId: debitEntry._id }
+    );
+    emitPayoutRequestUpdate(paidPayout || payout);
+
+    res.json({ payout: paidPayout || payout });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const rejectPayoutRequest = async (req, res, next) => {
+  try {
+    const reason = String(req.body.reason || "").trim();
+
+    if (!reason) {
+      return res.status(400).json({ error: "A rejection reason is required" });
+    }
+
+    const payout = await PayoutRequest.findOneAndUpdate(
+      {
+        _id: req.params.payoutId,
+        status: { $in: ["requested", "under_review"] },
+      },
+      {
+        $set: {
+          status: "rejected",
+          rejectedReason: reason,
+          "review.reviewedBy": req.user._id,
+          "review.reviewedAt": new Date(),
+        },
+      },
+      { new: true }
+    );
+
+    if (!payout) {
+      return res
+        .status(409)
+        .json({ error: "Payout is not in a reviewable state" });
+    }
+
+    const account = await releaseHold(payout.walletAccountId, payout.amount);
+
+    const releaseEntry = await createLedgerEntry({
+      userId: payout.userId,
+      walletAccountId: payout.walletAccountId,
+      direction: "release",
+      category: "withdrawal",
+      amount: payout.amount,
+      balanceAfter: account.availableBalance,
+      description: "Payout hold released after rejection",
+      referenceType: "PayoutRequest",
+      referenceId: payout._id,
+      metadata: { stage: "release", lockedAfter: account.lockedBalance },
+    });
+
+    await PayoutRequest.updateOne(
+      { _id: payout._id },
+      { $set: { releaseLedgerEntryId: releaseEntry._id } }
+    );
+
+    if (payout.transactionId) {
+      await Transaction.updateOne(
+        { _id: payout.transactionId },
+        { $set: { status: "failed", "meta.reason": "rejected" } }
+      );
+    }
+
+    await syncLegacyBalance(payout.userId, account.availableBalance);
+    await createAdminAuditLog(
+      req,
+      "admin.payout.rejected",
+      "PayoutRequest",
+      payout._id,
+      { amount: payout.amount, reason }
+    );
+    emitPayoutRequestUpdate(payout, account.availableBalance);
+
+    res.json({ payout });
+  } catch (err) {
+    next(err);
   }
 };
