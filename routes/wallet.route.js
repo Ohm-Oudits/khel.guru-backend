@@ -6,6 +6,7 @@ import {
   getTransactions,
   getWalletAccounts,
   getWalletLedger,
+  topUpDemoBalance,
   transferVaultFunds,
 } from "../controllers/wallet.controller.js";
 import { apiLimiter } from "../middleware/rateLimiter.js";
@@ -20,6 +21,7 @@ router.get("/balance", apiLimiter, getBalance);
 router.get("/accounts", apiLimiter, getWalletAccounts);
 router.get("/ledger", apiLimiter, getWalletLedger);
 router.post("/deposit", apiLimiter, deposit);
+router.post("/demo/top-up", apiLimiter, topUpDemoBalance);
 router.post("/withdraw", apiLimiter, withdraw);
 router.post("/vault/transfer", apiLimiter, transferVaultFunds);
 router.get("/transactions", apiLimiter, getTransactions);

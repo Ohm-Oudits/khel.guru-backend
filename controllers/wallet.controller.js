@@ -29,6 +29,16 @@ const getAccountsByType = async (userId) => {
   return mapWalletAccountsByType(accounts);
 };
 
+const getDemoTopUpMaxAmount = () => {
+  const configuredMax = Number(process.env.DEMO_TOP_UP_MAX_AMOUNT);
+
+  if (!Number.isFinite(configuredMax) || configuredMax <= 0) {
+    return 50000;
+  }
+
+  return configuredMax;
+};
+
 export const getBalance = async (req, res, next) => {
   try {
     const overview = await buildWalletOverview(req.user._id);
@@ -56,6 +66,8 @@ export const getWalletAccounts = async (req, res, next) => {
 export const deposit = async (req, res, next) => {
   try {
     const amount = normalizeAmount(req.body.amount);
+    const method = String(req.body.method || "upi").trim() || "upi";
+    const provider = String(req.body.provider || "manual").trim() || "manual";
 
     if (!amount) {
       return res.status(400).json({ error: "Invalid amount" });
@@ -76,6 +88,9 @@ export const deposit = async (req, res, next) => {
       meta: {
         walletAccountId: cashAccount._id,
         walletType: cashAccount.walletType,
+        method,
+        provider,
+        source: "cashier",
       },
     });
 
@@ -89,10 +104,16 @@ export const deposit = async (req, res, next) => {
       description: "Cash deposit credited to cash wallet",
       referenceType: "Transaction",
       referenceId: transaction._id,
+      metadata: {
+        method,
+        provider,
+      },
     });
 
     await createAuditLog(req, "wallet.deposit.created", cashAccount._id, {
       amount,
+      method,
+      provider,
       transactionId: transaction._id,
       ledgerEntryId: ledgerEntry._id,
     });
@@ -102,6 +123,74 @@ export const deposit = async (req, res, next) => {
       account: serializeWalletAccount(cashAccount),
       transactionId: transaction._id,
       ledgerEntryId: ledgerEntry._id,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const topUpDemoBalance = async (req, res, next) => {
+  try {
+    const amount = normalizeAmount(req.body.amount);
+    const source = String(req.body.source || "profile").trim() || "profile";
+    const demoTopUpMaxAmount = getDemoTopUpMaxAmount();
+
+    if (!amount) {
+      return res.status(400).json({ error: "Invalid amount" });
+    }
+
+    if (amount > demoTopUpMaxAmount) {
+      return res.status(400).json({
+        error: `Demo top up cannot exceed ${demoTopUpMaxAmount.toFixed(2)}`,
+      });
+    }
+
+    const accountsByType = await getAccountsByType(req.user._id);
+    const demoAccount = accountsByType.demo;
+
+    demoAccount.availableBalance += amount;
+    await demoAccount.save();
+
+    const transaction = await Transaction.create({
+      userId: req.user._id,
+      type: "demo_topup",
+      amount,
+      status: "success",
+      meta: {
+        walletAccountId: demoAccount._id,
+        walletType: demoAccount.walletType,
+        source,
+      },
+    });
+
+    const ledgerEntry = await createLedgerEntry({
+      userId: req.user._id,
+      walletAccountId: demoAccount._id,
+      direction: "credit",
+      category: "demo_topup",
+      amount,
+      balanceAfter: demoAccount.availableBalance,
+      description: "Demo balance credited for sandbox play",
+      referenceType: "Transaction",
+      referenceId: transaction._id,
+      metadata: {
+        source,
+      },
+    });
+
+    await createAuditLog(req, "wallet.demo.topup", demoAccount._id, {
+      amount,
+      source,
+      transactionId: transaction._id,
+      ledgerEntryId: ledgerEntry._id,
+    });
+
+    res.status(201).json({
+      message: "Demo balance added successfully",
+      account: serializeWalletAccount(demoAccount),
+      transactionId: transaction._id,
+      ledgerEntryId: ledgerEntry._id,
+      demoTopUpMaxAmount,
     });
   } catch (err) {
     next(err);

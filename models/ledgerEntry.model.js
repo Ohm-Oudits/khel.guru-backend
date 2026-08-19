@@ -23,6 +23,7 @@ const ledgerEntrySchema = new mongoose.Schema(
       type: String,
       enum: [
         "deposit",
+        "demo_topup",
         "withdrawal",
         "vault_transfer",
         "sports_bet",
