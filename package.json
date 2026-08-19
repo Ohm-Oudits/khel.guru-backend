@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "test": "node tests/run-tests.js"
+    "test": "node tests/run-tests.js",
+    "seed:dev-user": "node scripts/create-dev-user.js"
   },
   "keywords": [],
   "author": "",
