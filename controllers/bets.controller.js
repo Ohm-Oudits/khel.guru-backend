@@ -1,6 +1,8 @@
 import AuditLog from "../models/auditLog.model.js";
 import Market from "../models/market.model.js";
 import OddsSnapshot from "../models/oddsSnapshot.model.js";
+import ResponsibleGamingLimit from "../models/responsibleGamingLimit.model.js";
+import SelfExclusion from "../models/selfExclusion.model.js";
 import SportsBet from "../models/sportsBet.model.js";
 import SportsEvent from "../models/sportsEvent.model.js";
 import WalletAccount from "../models/walletAccount.model.js";
@@ -36,6 +38,13 @@ const createAuditLog = async (
 
 const getRequestedWalletType = (walletType) =>
   walletType === "demo" ? "demo" : "cash";
+
+const getActiveSportsSelfExclusionQuery = (userId) => ({
+  userId,
+  status: "active",
+  scope: { $in: ["sports", "all"] },
+  $or: [{ endsAt: null }, { endsAt: { $gt: new Date() } }],
+});
 
 const getLatestSelectionOdds = async ({
   marketId,
@@ -79,6 +88,27 @@ export const placeSingleBet = async (req, res, next) => {
     if (req.user.accountStatus !== "active") {
       return res.status(403).json({
         message: "Your account is not eligible to place bets right now",
+      });
+    }
+
+    const [activeSelfExclusion, responsibleGaming] = await Promise.all([
+      SelfExclusion.findOne(getActiveSportsSelfExclusionQuery(req.user._id)),
+      ResponsibleGamingLimit.findOne({ userId: req.user._id }),
+    ]);
+
+    if (activeSelfExclusion) {
+      return res.status(403).json({
+        message: "Sports betting is disabled while self-exclusion is active",
+      });
+    }
+
+    if (
+      responsibleGaming?.coolingOffUntil &&
+      responsibleGaming.coolingOffUntil.getTime() > Date.now()
+    ) {
+      return res.status(403).json({
+        message: "Cooling off period is active for this account",
+        coolingOffUntil: responsibleGaming.coolingOffUntil,
       });
     }
 

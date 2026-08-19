@@ -1,4 +1,5 @@
 import AuthSession from "../models/authSession.model.js";
+import AuditLog from "../models/auditLog.model.js";
 import KycProfile from "../models/kycProfile.model.js";
 import LedgerEntry from "../models/ledgerEntry.model.js";
 import ResponsibleGamingLimit from "../models/responsibleGamingLimit.model.js";
@@ -6,6 +7,25 @@ import SelfExclusion from "../models/selfExclusion.model.js";
 import SupportTicket from "../models/supportTicket.model.js";
 import User from "../models/user.model.js";
 import WalletAccount from "../models/walletAccount.model.js";
+
+const createAdminAuditLog = async (
+  req,
+  action,
+  entityType,
+  entityId,
+  metadata = {}
+) =>
+  AuditLog.create({
+    actorUserId: req.user._id,
+    actorType: "admin",
+    action,
+    entityType,
+    entityId,
+    severity: "info",
+    ipAddress: req.ip,
+    userAgent: req.get("User-Agent") || null,
+    metadata,
+  });
 
 export const getAdminOverview = async (req, res, next) => {
   try {
@@ -90,6 +110,110 @@ export const getAdminQueues = async (req, res, next) => {
         recentHighPriorityTickets,
         recentLedgerEntries,
       },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getKycReviewQueue = async (req, res, next) => {
+  try {
+    const profiles = await KycProfile.find({
+      status: { $in: ["pending", "review"] },
+    })
+      .sort({ updatedAt: -1 })
+      .limit(50)
+      .populate("userId", "username email phoneNumber accountStatus")
+      .lean();
+
+    res.json({
+      count: profiles.length,
+      profiles,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const reviewKycProfile = async (req, res, next) => {
+  try {
+    const allowedStatuses = ["pending", "review", "verified", "rejected"];
+    const allowedDocumentStatuses = [
+      "not_submitted",
+      "pending",
+      "approved",
+      "rejected",
+    ];
+    const allowedRiskStatuses = ["clear", "review", "restricted"];
+
+    const profile = await KycProfile.findOne({ userId: req.params.userId });
+
+    if (!profile) {
+      return res.status(404).json({ message: "KYC profile not found" });
+    }
+
+    if (
+      req.body.status &&
+      !allowedStatuses.includes(req.body.status)
+    ) {
+      return res.status(400).json({ message: "Invalid KYC status" });
+    }
+
+    if (
+      req.body.documentStatus &&
+      !allowedDocumentStatuses.includes(req.body.documentStatus)
+    ) {
+      return res.status(400).json({ message: "Invalid document status" });
+    }
+
+    if (
+      req.body.riskStatus &&
+      !allowedRiskStatuses.includes(req.body.riskStatus)
+    ) {
+      return res.status(400).json({ message: "Invalid risk status" });
+    }
+
+    profile.status = req.body.status || profile.status;
+    profile.documentStatus = req.body.documentStatus || profile.documentStatus;
+    profile.riskStatus = req.body.riskStatus || profile.riskStatus;
+    profile.metadata = {
+      ...profile.metadata,
+      reviewedAt: new Date().toISOString(),
+      reviewedByUserId: req.user._id,
+      reviewNotes: req.body.reviewNotes || "",
+    };
+    await profile.save();
+
+    await createAdminAuditLog(req, "admin.kyc.reviewed", "KycProfile", profile._id, {
+      userId: profile.userId,
+      status: profile.status,
+      documentStatus: profile.documentStatus,
+      riskStatus: profile.riskStatus,
+    });
+
+    res.json({
+      message: "KYC profile reviewed successfully",
+      kycProfile: profile,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getActiveSelfExclusions = async (req, res, next) => {
+  try {
+    const selfExclusions = await SelfExclusion.find({
+      status: "active",
+      $or: [{ endsAt: null }, { endsAt: { $gt: new Date() } }],
+    })
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .populate("userId", "username email phoneNumber accountStatus")
+      .lean();
+
+    res.json({
+      count: selfExclusions.length,
+      selfExclusions,
     });
   } catch (error) {
     next(error);

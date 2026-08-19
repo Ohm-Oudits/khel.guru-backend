@@ -53,8 +53,15 @@ const supportRoutes = getRouteEntries(supportRouter);
 const walletRoutes = getRouteEntries(walletRouter);
 
 expectRoute(accountRoutes, "/overview", ["GET"]);
+expectRoute(accountRoutes, "/kyc", ["GET", "PUT"]);
+expectRoute(accountRoutes, "/responsible-gaming", ["GET"]);
+expectRoute(accountRoutes, "/responsible-gaming/limits", ["PUT"]);
+expectRoute(accountRoutes, "/self-exclusions", ["GET", "POST"]);
 expectRoute(adminRoutes, "/overview", ["GET"]);
 expectRoute(adminRoutes, "/queues", ["GET"]);
+expectRoute(adminRoutes, "/kyc/queue", ["GET"]);
+expectRoute(adminRoutes, "/kyc/:userId/review", ["POST"]);
+expectRoute(adminRoutes, "/self-exclusions", ["GET"]);
 
 expectRoute(betsRoutes, "/single", ["POST"]);
 expectRoute(betsRoutes, "/history", ["GET"]);
@@ -88,8 +95,8 @@ expectRoute(walletRoutes, "/withdraw", ["POST"]);
 expectRoute(walletRoutes, "/vault/transfer", ["POST"]);
 expectRoute(walletRoutes, "/transactions", ["GET"]);
 
-assert.equal(accountRoutes.length, 1, "Account router surface changed unexpectedly");
-assert.equal(adminRoutes.length, 2, "Admin router surface changed unexpectedly");
+assert.equal(accountRoutes.length, 5, "Account router surface changed unexpectedly");
+assert.equal(adminRoutes.length, 5, "Admin router surface changed unexpectedly");
 assert.equal(betsRoutes.length, 4, "Bets router surface changed unexpectedly");
 assert.equal(securityRoutes.length, 3, "Security router surface changed unexpectedly");
 assert.equal(sportRoutes.length, 11, "Sports router surface changed unexpectedly");
