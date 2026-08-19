@@ -44,7 +44,9 @@ const setupPlinkoSocket = () => {
 
     socket.on("result", async (data) => {
       try {
-        const result = await service.result(data, userId);
+        // walletType rides along inside data (defaults to "demo" in the service).
+        const { walletType } = data || {};
+        const result = await service.result({ ...data, walletType }, userId);
 
         if (result.error) {
           socket.emit("error", { message: result.error });

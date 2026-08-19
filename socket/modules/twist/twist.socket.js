@@ -41,6 +41,28 @@ const setupTwistSocket = () => {
       }
     });
 
+    // Debit the spin's stake from the wallet.
+    socket.on("place_bet", async (data) => {
+      try {
+        const { betAmount, walletType } = data || {};
+
+        if (!betAmount) {
+          socket.emit("error", { message: "Missing bet amount" });
+          return;
+        }
+
+        const result = await service.placeBet(userId, betAmount, walletType);
+        if (result.error) {
+          socket.emit("error", { message: result.error });
+          return;
+        }
+
+        socket.emit("bet_result", result.result);
+      } catch (err) {
+        socket.emit("error", { message: err.message });
+      }
+    });
+
     socket.on("disconnect", () => {
       console.log(`❌ User ${userId} disconnected from Twist`);
     });

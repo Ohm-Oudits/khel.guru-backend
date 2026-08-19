@@ -56,6 +56,12 @@ const MinesSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    // Wallet the stake was debited from; winnings settle back to the same one.
+    walletType: {
+      type: String,
+      enum: ["demo", "cash"],
+      default: "demo",
+    },
     profit: {
       type: String,
       default: "0.000000",

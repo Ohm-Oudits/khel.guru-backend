@@ -2,6 +2,13 @@ import User from "../../../models/user.model.js";
 import Game from "../../../models/game.model.js";
 import Baccarat from "../../../models/games/baccarat.model.js";
 import mongoose from "mongoose";
+import {
+  debitGameStake,
+  creditGameWin,
+  refundGameStake,
+  getGameBalance,
+  resolveGameWalletType,
+} from "../../../services/casinoWallet.service.js";
 
 const service = {
   async join(userId) {
@@ -71,12 +78,14 @@ const service = {
     }
   },
 
-  async placeBet(userId, gameId, betType, amount) {
-    const session = await mongoose.startSession();
-    session.startTransaction();
-
+  async placeBet(userId, gameId, betType, amount, walletType = "demo") {
     try {
-      const game = await Baccarat.findOne({ gameId, status: "betting" });
+      // Accept "waiting" too: betting opens the moment the first stake lands
+      // (the round is created as "waiting" and nothing else flips it).
+      const game = await Baccarat.findOne({
+        gameId,
+        status: { $in: ["waiting", "betting"] },
+      });
       if (!game) {
         throw new Error("Game not found or betting is closed");
       }
@@ -86,8 +95,16 @@ const service = {
         throw new Error("User not found");
       }
 
-      if (user.balance < amount) {
-        throw new Error("Insufficient balance");
+      const resolvedWalletType = resolveGameWalletType(walletType);
+
+      // Debit the stake from the wallet (atomic, balance-floor guarded).
+      const debit = await debitGameStake(userId, {
+        gameKey: "baccarat",
+        amount,
+        walletType: resolvedWalletType,
+      });
+      if (debit.error) {
+        throw new Error(debit.error);
       }
 
       // Add bet to game
@@ -96,17 +113,26 @@ const service = {
         type: betType,
         amount: amount,
         status: "pending",
+        walletType: resolvedWalletType,
       });
+      game.status = "betting";
 
-      // Deduct amount from user balance
-      user.balance -= amount;
-
-      await game.save({ session });
-      await user.save({ session });
-      await session.commitTransaction();
+      try {
+        await game.save();
+      } catch (saveError) {
+        // The bet never landed on the table: give the stake back.
+        await refundGameStake(userId, {
+          gameKey: "baccarat",
+          amount,
+          walletType: resolvedWalletType,
+        });
+        throw saveError;
+      }
 
       return {
         success: true,
+        newBalance: debit.balance,
+        walletType: resolvedWalletType,
         game: {
           gameId: game.gameId,
           status: game.status,
@@ -119,22 +145,27 @@ const service = {
         },
       };
     } catch (error) {
-      await session.abortTransaction();
       throw new Error(error.message || "An error occurred while placing bet");
-    } finally {
-      session.endSession();
     }
   },
 
   async dealCards(gameId) {
-    const session = await mongoose.startSession();
-    session.startTransaction();
-
     try {
       const game = await Baccarat.findOne({ gameId, status: "betting" });
       if (!game) {
         throw new Error("Game not found or not in betting phase");
       }
+
+      // Claim the deal atomically so two racing start_dealing events can
+      // never settle (and pay) the same round twice.
+      const claimed = await Baccarat.findOneAndUpdate(
+        { _id: game._id, status: "betting" },
+        { $set: { status: "dealing" } }
+      );
+      if (!claimed) {
+        throw new Error("Game not found or not in betting phase");
+      }
+      game.status = "dealing";
 
       // Deal initial cards (2 each)
       game.playerCards = game.deck.splice(0, 2);
@@ -157,23 +188,33 @@ const service = {
       game.determineWinner();
       game.processPayouts();
 
-      // Update user balances
-      for (const bet of game.bets) {
-        const user = await User.findById(bet.userId);
-        if (user && bet.status === "won") {
-          user.balance += bet.payout;
-          await user.save({ session });
-        }
-      }
-
       game.status = "completed";
       game.endTime = new Date();
 
-      await game.save({ session });
-      await session.commitTransaction();
+      await game.save();
+
+      // Credit each winning bet's total payout back to the wallet it was
+      // staked from. Losing bets keep their debit. Track the resulting
+      // balance per bettor so the socket layer can report newBalance.
+      const balances = {};
+      for (const bet of game.bets) {
+        const key = String(bet.userId);
+        const betWalletType = bet.walletType || "demo";
+        if (bet.status === "won" && bet.payout > 0) {
+          const credit = await creditGameWin(bet.userId, {
+            gameKey: "baccarat",
+            amount: bet.payout,
+            walletType: betWalletType,
+          });
+          balances[key] = credit.balance;
+        } else if (!(key in balances)) {
+          balances[key] = await getGameBalance(bet.userId, betWalletType);
+        }
+      }
 
       return {
         success: true,
+        balances,
         game: {
           gameId: game.gameId,
           status: game.status,
@@ -186,10 +227,7 @@ const service = {
         },
       };
     } catch (error) {
-      await session.abortTransaction();
       throw new Error(error.message || "An error occurred while dealing cards");
-    } finally {
-      session.endSession();
     }
   },
 

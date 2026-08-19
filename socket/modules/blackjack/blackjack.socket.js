@@ -62,9 +62,13 @@ const setupBlackjackSocket = () => {
     });
 
     // Place bet
-    socket.on("place_bet", async ({ betAmount }) => {
+    socket.on("place_bet", async ({ betAmount, walletType }) => {
       try {
-        const result = await service.placeBet(userId, parseFloat(betAmount));
+        const result = await service.placeBet(
+          userId,
+          parseFloat(betAmount),
+          walletType
+        );
         if (result.success) {
           // Emit game state update
           socket.emit("game_state", result);

@@ -1,6 +1,12 @@
 import User from "../../../models/user.model.js";
 import Game from "../../../models/game.model.js";
 import Hilo from "../../../models/games/hilo.model.js";
+import {
+  debitGameStake,
+  creditGameWin,
+  refundGameStake,
+  resolveGameWalletType,
+} from "../../../services/casinoWallet.service.js";
 
 const CARD_VALUES = [
   "A",
@@ -31,7 +37,7 @@ const getRandomCard = () => {
 };
 
 const service = {
-  async join(userId, betAmount) {
+  async join(userId, betAmount, walletType = "demo") {
     try {
       const game = await Game.findOne({ name: "hilo" });
       if (!game) {
@@ -43,7 +49,8 @@ const service = {
         return { error: "User not found" };
       }
 
-      // Check if user has an existing game
+      // Check if user has an existing game — resuming an in-flight round
+      // must NOT debit again (its stake was taken when it was created).
       const existingGame = await Hilo.findOne({ userId });
       if (existingGame && !existingGame.gameOver && !existingGame.checkedOut) {
         return {
@@ -54,15 +61,40 @@ const service = {
         };
       }
 
+      const resolvedWalletType = resolveGameWalletType(walletType);
+
+      // Debit the stake exactly once, when the new round is created.
+      const debit = await debitGameStake(userId, {
+        gameKey: "hilo",
+        amount: betAmount,
+        walletType: resolvedWalletType,
+      });
+      if (debit.error) {
+        return { error: debit.error };
+      }
+
       // Create new game
       const initialCard = getRandomCard();
-      const hiloGame = await Hilo.create({
-        userId,
-        currentCard: initialCard,
-        historyCards: [{ ...initialCard, result: null }],
-        betAmount,
-        multiplier: 1.0,
-      });
+      let hiloGame;
+      try {
+        hiloGame = await Hilo.create({
+          userId,
+          currentCard: initialCard,
+          historyCards: [{ ...initialCard, result: null }],
+          betAmount,
+          multiplier: 1.0,
+          walletType: resolvedWalletType,
+        });
+      } catch (createError) {
+        // The unique userId index rejects a racing duplicate round; the
+        // round never existed, so give the stake back.
+        await refundGameStake(userId, {
+          gameKey: "hilo",
+          amount: betAmount,
+          walletType: resolvedWalletType,
+        });
+        throw createError;
+      }
 
       const gameIndex = user.continuedGames.findIndex(
         (gameId) => gameId.toString() === game._id.toString()
@@ -81,6 +113,8 @@ const service = {
         hasActiveGame: false,
         game: hiloGame,
         message: "New game created",
+        newBalance: debit.balance,
+        walletType: resolvedWalletType,
       };
     } catch (error) {
       console.error("Join game error:", error);
@@ -195,13 +229,29 @@ const service = {
       hiloGame.checkedOut = true;
       hiloGame.gameWon = true;
 
-      // Delete the game after checkout
-      await hiloGame.deleteOne();
+      // Claim the round atomically: only the caller that actually deletes
+      // the round document credits the cashout, so a double checkout (or a
+      // checkout racing a losing predict) can never pay twice.
+      const claimed = await Hilo.findOneAndDelete({ _id: hiloGame._id });
+      if (!claimed) {
+        return { error: "Game is already over" };
+      }
+
+      const walletType = claimed.walletType || "demo";
+      // Credit the total payout (multiplier starts at 1.0, so it includes
+      // the stake).
+      const credit = await creditGameWin(userId, {
+        gameKey: "hilo",
+        amount: Number(profit),
+        walletType,
+      });
 
       return {
         success: true,
         profit,
         multiplier: hiloGame.multiplier,
+        newBalance: credit.balance,
+        walletType,
       };
     } catch (error) {
       console.error("Checkout error:", error);

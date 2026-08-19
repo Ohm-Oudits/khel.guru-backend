@@ -16,6 +16,12 @@ const scratchGameSchema = new mongoose.Schema(
       type: Number,
       required: true,
     },
+    // Wallet the stake was debited from; winnings are credited back to it.
+    walletType: {
+      type: String,
+      enum: ["demo", "cash"],
+      default: "demo",
+    },
     grid: [
       {
         revealed: {

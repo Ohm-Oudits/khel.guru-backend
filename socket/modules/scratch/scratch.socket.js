@@ -67,7 +67,7 @@ const setupScratchSocket = () => {
       });
 
       try {
-        const { betAmount, isAutoBet, numberOfBets } = data;
+        const { betAmount, isAutoBet, numberOfBets, walletType } = data;
 
         // Check if there's an active game
         const activeGame = await service.getActiveGame(userId);
@@ -83,7 +83,8 @@ const setupScratchSocket = () => {
           userId,
           betAmount,
           isAutoBet,
-          numberOfBets
+          numberOfBets,
+          walletType
         );
         console.log(`✅ New game created for user ${userId}:`, {
           gameId: game._id,

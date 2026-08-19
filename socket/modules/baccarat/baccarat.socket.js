@@ -58,7 +58,7 @@ const setupBaccaratSocket = () => {
       }
     });
 
-    socket.on("place_bet", async ({ betType, amount }) => {
+    socket.on("place_bet", async ({ betType, amount, walletType }) => {
       if (!currentGameId) {
         socket.emit("error", { message: "Not in a game" });
         return;
@@ -69,7 +69,8 @@ const setupBaccaratSocket = () => {
           userId,
           currentGameId,
           betType,
-          amount
+          amount,
+          walletType
         );
         if (result.success) {
           socket.emit("bet_placed", result);
@@ -108,6 +109,13 @@ const setupBaccaratSocket = () => {
               winner: result.game.winner,
               bets: result.game.bets,
             });
+
+          // Report the settled balance privately to the dealing player.
+          socket.emit("game_settled", {
+            gameId: currentGameId,
+            winner: result.game.winner,
+            newBalance: result.balances?.[String(userId)] ?? null,
+          });
 
           setTimeout(async () => {
             try {

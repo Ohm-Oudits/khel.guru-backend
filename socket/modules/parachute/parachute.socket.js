@@ -36,13 +36,13 @@ const setupParachuteSocket = () => {
     // Start game
     socket.on("add_game", async (data) => {
       try {
-        const { betAmount, difficulty } = data;
+        const { betAmount, difficulty, walletType } = data;
         if (!betAmount || !difficulty) {
           socket.emit("error", { message: "Missing required parameters" });
           return;
         }
 
-        const result = await service.join(userId, betAmount, difficulty);
+        const result = await service.join(userId, betAmount, difficulty, walletType);
         if (result.error) {
           socket.emit("error", { message: result.error });
           return;
@@ -68,7 +68,17 @@ const setupParachuteSocket = () => {
           socket.data.emitInterval = emitInterval;
         }
 
-        socket.emit("game_started", result.gameState);
+        // Emit a plain snapshot (gameState.intervalId is a Node timer and
+        // must not be serialized).
+        socket.emit("game_started", {
+          betAmount: result.gameState.betAmount,
+          difficulty: result.gameState.difficulty,
+          multiplier: result.gameState.multiplier,
+          isCrashed: result.gameState.isCrashed,
+          hasCheckedOut: result.gameState.hasCheckedOut,
+          walletType: result.gameState.walletType,
+          newBalance: result.newBalance,
+        });
       } catch (err) {
         console.error("Error in add_game:", err.message);
         socket.emit("error", { message: err.message });
@@ -106,6 +116,7 @@ const setupParachuteSocket = () => {
         socket.emit("checkout_success", {
           multiplier: result.multiplier,
           winAmount: result.winAmount,
+          newBalance: result.newBalance,
           hasCheckedOut: true,
         });
       } catch (error) {

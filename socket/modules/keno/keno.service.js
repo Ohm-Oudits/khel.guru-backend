@@ -1,6 +1,10 @@
 import User from "../../../models/user.model.js";
 import Game from "../../../models/game.model.js";
 import { chances } from "./constants.js";
+import {
+  debitGameStake,
+  creditGameWin,
+} from "../../../services/casinoWallet.service.js";
 
 const generateRandomNumbers = (count, min, max) => {
   const numbers = new Set();
@@ -12,7 +16,18 @@ const generateRandomNumbers = (count, min, max) => {
 };
 
 const service = {
-  async playGame(userId, checkedBoxes, bet, risk) {
+  async playGame(userId, checkedBoxes, bet, risk, walletType = "demo") {
+    // Debit the stake from the wallet first; a losing bet keeps this debit.
+    const betAmount = parseFloat(bet);
+    const debit = await debitGameStake(userId, {
+      gameKey: "keno",
+      amount: betAmount,
+      walletType,
+    });
+    if (debit.error) {
+      return { error: debit.error };
+    }
+
     try {
       const game = await Game.findOne({ name: "keno" });
       if (!game) {
@@ -37,6 +52,15 @@ const service = {
       const payout =
         chances(risk)[checkedBoxes.length - 1]?.values[0]?.[matches] || 0;
 
+      // payout is a multiplier; credit the total return (stake * multiplier).
+      const winAmount = betAmount * payout;
+      const credit = await creditGameWin(userId, {
+        gameKey: "keno",
+        amount: winAmount,
+        walletType,
+      });
+      const newBalance = credit.balance ?? debit.balance;
+
       const gameIndex = user.continuedGames.findIndex(
         (gameId) => gameId.toString() === game._id.toString()
       );
@@ -49,7 +73,16 @@ const service = {
       await user.save();
       await game.save();
 
-      return { success: true, grid, gifts, matches, payout };
+      return {
+        success: true,
+        grid,
+        gifts,
+        matches,
+        payout,
+        winAmount,
+        newBalance,
+        walletType,
+      };
     } catch (error) {
       throw new Error(
         "An error occurred while playing the game: " + error.message

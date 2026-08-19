@@ -51,7 +51,7 @@ const setupLimboSocket = () => {
     // Place bet
     socket.on("place_bet", async (data) => {
       try {
-        const { betAmount, targetMultiplier } = data;
+        const { betAmount, targetMultiplier, walletType } = data;
 
         if (!betAmount || !targetMultiplier) {
           socket.emit("error", { message: "Missing bet parameters" });
@@ -61,7 +61,8 @@ const setupLimboSocket = () => {
         const result = await service.placeBet(
           userId,
           betAmount,
-          targetMultiplier
+          targetMultiplier,
+          walletType
         );
 
         if (result.error) {

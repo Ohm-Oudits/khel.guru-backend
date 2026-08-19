@@ -53,6 +53,12 @@ const HiloSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    // Wallet the stake was debited from; the cashout is credited back to it.
+    walletType: {
+      type: String,
+      enum: ["demo", "cash"],
+      default: "demo",
+    },
     profit: {
       type: String,
       default: "0.000000",

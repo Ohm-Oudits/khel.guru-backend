@@ -34,11 +34,12 @@ const setupKenoSocket = () => {
 
     socket.join(`keno:${userId}`);
 
-    socket.on("add_game", async ({ checkedBoxes, bet, risk }) => {
+    socket.on("add_game", async ({ checkedBoxes, bet, risk, walletType }) => {
       console.log(`Received add_game from user ${userId}:`, {
         checkedBoxes,
         bet,
         risk,
+        walletType,
       });
       try {
         if (
@@ -64,7 +65,17 @@ const setupKenoSocket = () => {
           });
         }
 
-        const result = await service.playGame(userId, checkedBoxes, bet, risk);
+        const result = await service.playGame(
+          userId,
+          checkedBoxes,
+          bet,
+          risk,
+          walletType
+        );
+        if (result.error) {
+          socket.emit("error", { message: result.error });
+          return;
+        }
         console.log(`Emitting game_result to user ${userId}:`, result);
         socket.emit("game_result", result);
       } catch (err) {

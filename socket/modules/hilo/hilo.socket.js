@@ -47,17 +47,19 @@ const setupHiloSocket = () => {
 
     socket.on("add_game", async (data) => {
       try {
-        const { betAmount } = data;
+        const { betAmount, walletType } = data;
         if (!betAmount) {
           throw new Error("Missing bet amount");
         }
 
-        const result = await service.join(userId, betAmount);
+        const result = await service.join(userId, betAmount, walletType);
         if (result.success) {
           socket.emit("game_state", {
             ...result.game,
             hasActiveGame: result.hasActiveGame,
             message: result.message,
+            newBalance: result.newBalance,
+            walletType: result.walletType,
           });
         } else {
           socket.emit("error", { message: result.error });
@@ -109,6 +111,8 @@ const setupHiloSocket = () => {
             checkedOut: true,
             profit: result.profit,
             multiplier: result.multiplier,
+            newBalance: result.newBalance,
+            walletType: result.walletType,
           });
         } else {
           socket.emit("error", { message: result.error });

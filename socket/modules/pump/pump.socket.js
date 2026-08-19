@@ -42,7 +42,70 @@ const setupPumpSocket = () => {
       }
     });
 
+    // Stake commitment: debit once, or reject the bet.
+    socket.on("place_bet", async (data) => {
+      try {
+        const { betAmount, walletType } = data || {};
+        if (!betAmount || Number(betAmount) <= 0) {
+          socket.emit("error", { message: "Invalid bet amount" });
+          return;
+        }
+
+        const result = await service.placeBet(userId, betAmount, walletType);
+        if (result.error) {
+          socket.emit("error", { message: result.error });
+          return;
+        }
+
+        socket.emit("bet_placed", {
+          betAmount: result.betAmount,
+          newBalance: result.newBalance,
+          walletType: result.walletType,
+        });
+      } catch (err) {
+        console.error("Error in pump place_bet:", err);
+        socket.emit("error", { message: err.message });
+      }
+    });
+
+    // Cashout: credit stake x multiplier once for the active bet.
+    socket.on("cash_out", async (data) => {
+      try {
+        const { multiplier } = data || {};
+        const result = await service.cashOut(userId, multiplier);
+        if (result.error) {
+          socket.emit("error", { message: result.error });
+          return;
+        }
+
+        socket.emit("cashout_success", {
+          multiplier: result.multiplier,
+          payout: result.payout,
+          newBalance: result.newBalance,
+          walletType: result.walletType,
+        });
+      } catch (err) {
+        console.error("Error in pump cash_out:", err);
+        socket.emit("error", { message: err.message });
+      }
+    });
+
+    // Bust: the balloon popped before a cashout; the stake stays debited.
+    socket.on("bust", async () => {
+      try {
+        const result = await service.bust(userId);
+        socket.emit("bet_busted", {
+          newBalance: result.newBalance ?? null,
+        });
+      } catch (err) {
+        console.error("Error in pump bust:", err);
+        socket.emit("error", { message: err.message });
+      }
+    });
+
     socket.on("disconnect", () => {
+      // An unsettled bet is forfeited (pop semantics) on disconnect.
+      service.clearBet(userId);
       console.log(`❌ User ${userId} disconnected from Pump`);
     });
   });

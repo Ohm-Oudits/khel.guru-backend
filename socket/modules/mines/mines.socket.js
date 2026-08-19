@@ -51,20 +51,21 @@ const setupMinesSocket = () => {
 
     socket.on("add_game", async (data) => {
       try {
-        const { betAmount, mines } = data;
+        const { betAmount, mines, walletType } = data;
         if (!betAmount || !mines) {
           throw new Error("Missing required game parameters");
         }
 
-        const result = await service.join(userId, betAmount, mines);
+        const result = await service.join(userId, betAmount, mines, walletType);
         if (result.success) {
           socket.emit("game_state", {
             ...result.game,
             hasActiveGame: result.hasActiveGame,
             message: result.message,
+            newBalance: result.newBalance,
           });
         } else {
-          socket.emit("error", { message: "Game error" });
+          socket.emit("error", { message: result.error || "Game error" });
         }
       } catch (err) {
         socket.emit("error", { message: "Connection error" });
@@ -100,12 +101,16 @@ const setupMinesSocket = () => {
         if (result.success) {
           socket.emit("game_state", result.game);
           if (result.result === "bomb") {
+            // Bust: no credit, the stake debit stands.
             socket.emit("game_over", { game: result.game });
           } else if (result.result === "diamond" && result.game.gameWon) {
-            socket.emit("game_won", { game: result.game });
+            socket.emit("game_won", {
+              game: result.game,
+              newBalance: result.newBalance,
+            });
           }
         } else {
-          socket.emit("error", { message: "Game error" });
+          socket.emit("error", { message: result.error || "Game error" });
         }
       } catch (err) {
         socket.emit("error", { message: "Connection error" });
@@ -126,9 +131,10 @@ const setupMinesSocket = () => {
             hasActiveGame: false,
             profit: result.profit,
             revealedDiamonds: result.revealedDiamonds,
+            newBalance: result.newBalance,
           });
         } else {
-          socket.emit("error", { message: "Connection error" });
+          socket.emit("error", { message: result.error || "Connection error" });
         }
       } catch (err) {
         socket.emit("error", { message: "Connection error" });

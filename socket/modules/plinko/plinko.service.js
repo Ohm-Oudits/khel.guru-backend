@@ -1,5 +1,9 @@
 import User from "../../../models/user.model.js";
 import Game from "../../../models/game.model.js";
+import {
+  debitGameStake,
+  creditGameWin,
+} from "../../../services/casinoWallet.service.js";
 
 const service = {
   async join(userId) {
@@ -34,35 +38,35 @@ const service = {
 
   async result(data, userId) {
     try {
-      const { bin, payout, betAmount } = data;
+      const { bin, payout, betAmount, walletType = "demo" } = data;
 
-      const user = await User.findById(userId);
-      if (!user) {
-        return { error: "User not found" };
+      // Debit the stake from the wallet first; a losing drop keeps this debit.
+      const debit = await debitGameStake(userId, {
+        gameKey: "plinko",
+        amount: betAmount,
+        walletType,
+      });
+      if (debit.error) {
+        return { error: debit.error };
       }
 
-      // Check if user has enough balance
-      if (user.balance < betAmount) {
-        return { error: "Insufficient balance" };
-      }
-
-      // Deduct bet amount
-      user.balance -= betAmount;
-
-      // Add payout if won
-      if (payout > 0) {
-        user.balance += payout;
-      }
-
-      await user.save();
+      // payout is the total return (stake * bin multiplier); zero is a no-op.
+      const credit = await creditGameWin(userId, {
+        gameKey: "plinko",
+        amount: payout,
+        walletType,
+      });
+      const newBalance = credit.balance ?? debit.balance;
 
       return {
         success: true,
         data: {
-          balance: user.balance,
+          balance: newBalance,
+          newBalance,
           payout,
           bin,
           multiplier: payout / betAmount,
+          walletType,
         },
       };
     } catch (error) {

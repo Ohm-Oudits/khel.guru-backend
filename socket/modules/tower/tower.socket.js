@@ -47,11 +47,12 @@ const setupTowerSocket = () => {
     // Start new game
     socket.on("add_game", async (data) => {
       try {
-        const { betAmount, difficulty } = data;
+        const { betAmount, difficulty, walletType } = data;
         const gameState = await service.startGame(
           userId,
           betAmount,
-          difficulty
+          difficulty,
+          walletType
         );
         socket.emit("game_state", gameState);
       } catch (err) {

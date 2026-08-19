@@ -59,6 +59,7 @@ const setupSlideSocket = () => {
         socket.emit("bet_placed", {
           betAmount: betData.betAmount,
           targetMultiplier: betData.targetMultiplier,
+          newBalance: result.newBalance,
           timestamp: Date.now(),
         });
 
@@ -73,7 +74,8 @@ const setupSlideSocket = () => {
 
     socket.on("place_auto_bet", async (autoBetData) => {
       try {
-        const { betAmount, targetMultiplier, numberOfBets } = autoBetData;
+        const { betAmount, targetMultiplier, numberOfBets, walletType } =
+          autoBetData;
 
         if (!numberOfBets || numberOfBets <= 0 || numberOfBets > 100) {
           socket.emit("error", { message: "Invalid number of bets" });
@@ -83,6 +85,7 @@ const setupSlideSocket = () => {
         const result = await service.placeBet(userId, {
           betAmount,
           targetMultiplier,
+          walletType,
         });
         if (result.error) {
           socket.emit("error", { message: result.error });
@@ -93,6 +96,7 @@ const setupSlideSocket = () => {
           remainingBets: numberOfBets - 1,
           betAmount,
           targetMultiplier,
+          walletType,
         };
 
         socket.emit("auto_bet_started", {
@@ -120,6 +124,7 @@ const setupSlideSocket = () => {
         const result = await service.placeBet(socket.data.userId, {
           betAmount: autoBet.betAmount,
           targetMultiplier: autoBet.targetMultiplier,
+          walletType: autoBet.walletType,
         });
 
         if (result.success) {

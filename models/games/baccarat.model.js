@@ -84,6 +84,12 @@ const baccaratSchema = new mongoose.Schema({
         type: Number,
         required: true,
       },
+      // Wallet this stake was debited from; a win pays back into it.
+      walletType: {
+        type: String,
+        enum: ["demo", "cash"],
+        default: "demo",
+      },
       status: {
         type: String,
         enum: ["pending", "won", "lost"],

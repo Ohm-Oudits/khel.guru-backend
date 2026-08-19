@@ -43,7 +43,9 @@ const setupWheelSocket = () => {
 
     socket.on("play_game", async (data) => {
       try {
-        const result = await service.playGame(userId, data);
+        // walletType rides along inside data (defaults to "demo" in the service).
+        const { walletType } = data || {};
+        const result = await service.playGame(userId, { ...data, walletType });
         if (result.error) {
           socket.emit("error", { message: result.error });
           return;

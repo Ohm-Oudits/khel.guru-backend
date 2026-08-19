@@ -2,6 +2,12 @@ import User from "../../../models/user.model.js";
 import Game from "../../../models/game.model.js";
 import Mines from "../../../models/games/mines.model.js";
 import Transaction from "../../../models/transaction.model.js";
+import {
+  debitGameStake,
+  creditGameWin,
+  refundGameStake,
+  resolveGameWalletType,
+} from "../../../services/casinoWallet.service.js";
 
 const createGrid = (mines) => {
   const grid = Array(25)
@@ -27,7 +33,7 @@ const createGrid = (mines) => {
 };
 
 const service = {
-  async join(userId, betAmount, mines) {
+  async join(userId, betAmount, mines, walletType = "demo") {
     try {
       const game = await Game.findOne({ name: "mines" });
       if (!game) {
@@ -50,18 +56,44 @@ const service = {
         };
       }
 
-      const grid = createGrid(mines);
-      const minesGame = await Mines.create({
-        userId,
-        grid,
-        mines,
-        gems: 25 - mines,
-        gameOver: false,
-        gameWon: false,
-        betAmount,
-        profit: "0.000000",
-        loss: "0.000000",
+      const resolvedWalletType = resolveGameWalletType(walletType);
+
+      // Debit the stake exactly once, when the round starts. A losing round
+      // (bomb) keeps this debit; a cashout credits stake + profit back.
+      const debit = await debitGameStake(userId, {
+        gameKey: "mines",
+        amount: betAmount,
+        walletType: resolvedWalletType,
       });
+      if (debit.error) {
+        return { error: debit.error };
+      }
+
+      let minesGame;
+      try {
+        const grid = createGrid(mines);
+        minesGame = await Mines.create({
+          userId,
+          grid,
+          mines,
+          gems: 25 - mines,
+          gameOver: false,
+          gameWon: false,
+          betAmount,
+          walletType: resolvedWalletType,
+          profit: "0.000000",
+          loss: "0.000000",
+        });
+      } catch (createError) {
+        // The round never started (e.g. duplicate-game race): hand the
+        // stake back so the debit does not leak.
+        await refundGameStake(userId, {
+          gameKey: "mines",
+          amount: debit.stake,
+          walletType: resolvedWalletType,
+        });
+        throw createError;
+      }
 
       const gameIndex = user.continuedGames.findIndex(
         (gameId) => gameId.toString() === game._id.toString()
@@ -80,6 +112,7 @@ const service = {
         hasActiveGame: false,
         game: minesGame,
         message: "New game created",
+        newBalance: debit.balance,
       };
     } catch (error) {
       console.error("Join game error:", error);
@@ -139,13 +172,27 @@ const service = {
         (tile) => tile.type === "diamond" && !tile.revealed
       ).length;
 
+      let newBalance;
       if (unrevealedDiamonds === 0) {
         minesGame.gameWon = true;
         const multiplier = (25 - minesGame.mines) / minesGame.mines;
         minesGame.profit = (
           parseFloat(minesGame.betAmount) * multiplier
         ).toFixed(6);
-        await minesGame.deleteOne();
+        // Deleting the round doc is the settlement guard: only the caller
+        // that actually removed it credits the payout, so a full-board win
+        // can never be paid twice (nor again via a later "checkout" emit).
+        const deletion = await minesGame.deleteOne();
+        if (deletion?.deletedCount === 1) {
+          const payout =
+            parseFloat(minesGame.betAmount) + parseFloat(minesGame.profit);
+          const credit = await creditGameWin(userId, {
+            gameKey: "mines",
+            amount: payout,
+            walletType: minesGame.walletType || "demo",
+          });
+          newBalance = credit.balance;
+        }
       } else {
         await minesGame.save();
       }
@@ -154,6 +201,7 @@ const service = {
         success: true,
         game: minesGame,
         result: "diamond",
+        newBalance,
       };
     } catch (error) {
       console.error("Reveal error:", error);
@@ -175,7 +223,11 @@ const service = {
 
   async checkout(userId) {
     try {
-      const minesGame = await Mines.findOne({ userId });
+      // Atomically pop the round: findOneAndDelete makes sure exactly one
+      // concurrent checkout wins the doc, so the payout is credited once.
+      // (A busted round was already deleted in reveal(), so a stray
+      // checkout after a bomb finds nothing and credits nothing.)
+      const minesGame = await Mines.findOneAndDelete({ userId });
       if (!minesGame) {
         return { error: "No game found" };
       }
@@ -192,13 +244,19 @@ const service = {
         (revealedDiamonds / (25 - minesGame.mines))
       ).toFixed(6);
 
-      // Delete the game
-      await minesGame.deleteOne();
+      // Credit the total payout (stake + profit) exactly once.
+      const payout = parseFloat(minesGame.betAmount) + parseFloat(profit);
+      const credit = await creditGameWin(userId, {
+        gameKey: "mines",
+        amount: payout,
+        walletType: minesGame.walletType || "demo",
+      });
 
       return {
         success: true,
         profit,
         revealedDiamonds,
+        newBalance: credit.balance,
       };
     } catch (error) {
       console.error("Checkout error:", error);

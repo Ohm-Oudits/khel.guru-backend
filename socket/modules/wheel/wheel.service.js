@@ -1,6 +1,10 @@
 import User from "../../../models/user.model.js";
 import Game from "../../../models/game.model.js";
 import Transaction from "../../../models/transaction.model.js";
+import {
+  debitGameStake,
+  creditGameWin,
+} from "../../../services/casinoWallet.service.js";
 
 const generateResult = (risk, segments) => {
   const random = Math.random();
@@ -84,24 +88,29 @@ const service = {
 
   async playGame(userId, data) {
     try {
-      const { risk, segments, betAmount } = data;
-      const user = await User.findById(userId);
+      const { risk, segments, betAmount, walletType = "demo" } = data;
 
-      if (!user) {
-        return { error: "User not found" };
-      }
-
-      if (user.balance < betAmount) {
-        return { error: "Insufficient balance" };
+      // Debit the stake from the wallet first; a losing bet keeps this debit.
+      const debit = await debitGameStake(userId, {
+        gameKey: "wheel",
+        amount: betAmount,
+        walletType,
+      });
+      if (debit.error) {
+        return { error: debit.error };
       }
 
       const result = generateResult(risk, segments);
 
       const winAmount = betAmount * result.multiplier;
-      const finalBalance = user.balance - betAmount + winAmount;
 
-      user.balance = finalBalance;
-      await user.save();
+      // Credit the total return (stake * multiplier) on a win; a loss credits nothing.
+      const credit = await creditGameWin(userId, {
+        gameKey: "wheel",
+        amount: winAmount,
+        walletType,
+      });
+      const newBalance = credit.balance ?? debit.balance;
 
       const betTransaction = new Transaction({
         userId: userId,
@@ -129,7 +138,9 @@ const service = {
           multiplier: result.multiplier,
           winAmount,
           chance: result.chance,
-          balance: finalBalance,
+          balance: newBalance,
+          newBalance,
+          walletType,
         },
       };
     } catch (error) {

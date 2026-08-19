@@ -108,7 +108,13 @@ const setupRouletteSocket = () => {
         const result = await service.placeBet(socket.user._id, {
           bets: data.bets,
           totalAmount: data.totalAmount,
+          walletType: data.walletType,
         });
+
+        if (result.error) {
+          socket.emit("error", result.error);
+          return;
+        }
 
         console.log(`[Roulette] Bet result for ${socket.user.username}:`, {
           result: result.result,
@@ -154,11 +160,16 @@ const setupRouletteSocket = () => {
             }`
           );
 
-          const result = await service.placeBet(
-            socket.user._id,
-            data.bets,
-            data.totalAmount
-          );
+          const result = await service.placeBet(socket.user._id, {
+            bets: data.bets,
+            totalAmount: data.totalAmount,
+            walletType: data.walletType,
+          });
+
+          if (result.error) {
+            socket.emit("error", result.error);
+            return;
+          }
 
           console.log(`[Roulette] Auto bet ${i + 1} result:`, {
             result: result.result,

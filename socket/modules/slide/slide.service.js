@@ -1,6 +1,11 @@
 import User from "../../../models/user.model.js";
 import Game from "../../../models/game.model.js";
 import { io } from "../../socket.js";
+import {
+  debitGameStake,
+  creditGameWin,
+  resolveGameWalletType,
+} from "../../../services/casinoWallet.service.js";
 
 const gameState = {
   isWaiting: true,
@@ -71,7 +76,7 @@ const service = {
 
   async placeBet(userId, betData) {
     try {
-      const { betAmount, targetMultiplier } = betData;
+      const { betAmount, targetMultiplier, walletType } = betData;
 
       if (
         !betAmount ||
@@ -88,21 +93,37 @@ const service = {
         return { error: "User not found" };
       }
 
-      if (user.balance < betAmount) {
-        return { error: "Insufficient balance" };
-      }
-
       if (!gameState.isWaiting) {
         return { error: "Betting is closed" };
       }
 
+      // One bet per user per round: the Map is keyed by userId, so a second
+      // place_bet would silently overwrite (and orphan) an already-debited
+      // stake. Reject it instead, keeping the debit exactly-once.
+      if (gameState.activeBets.has(userId)) {
+        return { error: "Bet already placed for this round" };
+      }
+
+      const resolvedWalletType = resolveGameWalletType(walletType);
+
+      // Debit the stake exactly once, when the bet enters the round.
+      const debit = await debitGameStake(userId, {
+        gameKey: "slide",
+        amount: betAmount,
+        walletType: resolvedWalletType,
+      });
+      if (debit.error) {
+        return { error: debit.error };
+      }
+
       gameState.activeBets.set(userId, {
-        betAmount,
+        betAmount: debit.stake,
         targetMultiplier,
+        walletType: resolvedWalletType,
         timestamp: Date.now(),
       });
 
-      return { success: true };
+      return { success: true, newBalance: debit.balance };
     } catch (error) {
       return { error: "An error occurred while placing bet" };
     }
@@ -113,16 +134,36 @@ const service = {
       const targetMultiplier = generateMultiplier();
       gameState.targetMultiplier = targetMultiplier;
 
-      for (const [userId, bet] of gameState.activeBets) {
-        const user = await User.findById(userId);
-        if (!user) continue;
+      // Snapshot and clear the round's bets before settling: each bet is
+      // settled exactly once even if this ever ran twice, and the stake was
+      // already debited at place_bet so a loss credits nothing here.
+      const settledBets = new Map(gameState.activeBets);
+      gameState.activeBets.clear();
 
-        const { betAmount, targetMultiplier: betTarget } = bet;
+      for (const [userId, bet] of settledBets) {
+        const { betAmount, targetMultiplier: betTarget, walletType } = bet;
         const isWin = Math.abs(betTarget - targetMultiplier) < 0.01;
         const winAmount = isWin ? betAmount * targetMultiplier : 0;
 
-        user.balance += winAmount - betAmount;
-        await user.save();
+        // Total payout (stake x round multiplier) on a win; 0 is a no-op.
+        const credit = await creditGameWin(userId, {
+          gameKey: "slide",
+          amount: winAmount,
+          walletType: walletType || "demo",
+        });
+
+        io.of("/slide")
+          .to(`slide:${userId}`)
+          .emit("bet_result", {
+            round: gameState.currentRound,
+            multiplier: targetMultiplier,
+            betAmount,
+            targetMultiplier: betTarget,
+            isWin,
+            winAmount,
+            newBalance: credit.balance,
+            walletType: walletType || "demo",
+          });
       }
 
       gameState.roundResults.unshift({

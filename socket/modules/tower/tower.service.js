@@ -1,6 +1,13 @@
 import User from "../../../models/user.model.js";
 import Game from "../../../models/game.model.js";
 import Tower from "../../../models/games/tower.model.js";
+import {
+  debitGameStake,
+  creditGameWin,
+  refundGameStake,
+  getGameBalance,
+  resolveGameWalletType,
+} from "../../../services/casinoWallet.service.js";
 
 const service = {
   async getGameState(userId) {
@@ -24,14 +31,15 @@ const service = {
     }
   },
 
-  async startGame(userId, betAmount, difficulty) {
+  async startGame(userId, betAmount, difficulty, walletType = "demo") {
     try {
       const user = await User.findById(userId);
       if (!user) {
         throw new Error("User not found");
       }
 
-      // Check for existing game
+      // Check for existing game — resuming an in-flight round must NOT
+      // debit again (its stake was taken when it was created).
       const existingGame = await Tower.findOne({ userId });
       if (
         existingGame &&
@@ -47,27 +55,52 @@ const service = {
         };
       }
 
+      const resolvedWalletType = resolveGameWalletType(walletType);
+
+      // Debit the stake exactly once, when the new round is created.
+      const debit = await debitGameStake(userId, {
+        gameKey: "tower",
+        amount: betAmount,
+        walletType: resolvedWalletType,
+      });
+      if (debit.error) {
+        throw new Error(debit.error);
+      }
+
       // Generate grid based on difficulty
       const grid = this.generateGrid(difficulty);
 
       // Create or update tower game
-      const tower = await Tower.findOneAndUpdate(
-        { userId },
-        {
-          userId,
-          grid,
-          betAmount,
-          gameOver: false,
-          gameWon: false,
-          profit: 0,
-          loss: 0,
-          checkedOut: false,
-          currentRow: grid.length - 1, // Start from bottom row
-          difficulty,
-          selectedBoxes: [], // Add selectedBoxes array to track revealed boxes
-        },
-        { upsert: true, new: true }
-      );
+      let tower;
+      try {
+        tower = await Tower.findOneAndUpdate(
+          { userId },
+          {
+            userId,
+            grid,
+            betAmount,
+            gameOver: false,
+            gameWon: false,
+            profit: 0,
+            loss: 0,
+            checkedOut: false,
+            currentRow: grid.length - 1, // Start from bottom row
+            difficulty,
+            selectedBoxes: [], // Add selectedBoxes array to track revealed boxes
+            walletType: resolvedWalletType,
+            settled: false,
+          },
+          { upsert: true, new: true }
+        );
+      } catch (createError) {
+        // The round never came into existence: give the stake back.
+        await refundGameStake(userId, {
+          gameKey: "tower",
+          amount: betAmount,
+          walletType: resolvedWalletType,
+        });
+        throw createError;
+      }
 
       return {
         ...tower.toObject(),
@@ -75,6 +108,8 @@ const service = {
         existingGame: false,
         currentRow: tower.currentRow,
         grid: tower.grid,
+        newBalance: debit.balance,
+        walletType: resolvedWalletType,
       };
     } catch (error) {
       throw new Error(error.message || "Failed to start game");
@@ -138,6 +173,26 @@ const service = {
       tower.grid = grid;
       await tower.save();
 
+      // Reaching the top settles the round: credit the total payout exactly
+      // once by claiming the round's `settled` flag atomically. Checkout on
+      // an already-won game skips crediting (see checkout below), so a win
+      // can never pay twice.
+      let newBalance = null;
+      if (tower.gameWon) {
+        const claim = await Tower.findOneAndUpdate(
+          { _id: tower._id, settled: { $ne: true } },
+          { $set: { settled: true } }
+        );
+        if (claim) {
+          const credit = await creditGameWin(userId, {
+            gameKey: "tower",
+            amount: tower.profit,
+            walletType: tower.walletType || "demo",
+          });
+          newBalance = credit.balance;
+        }
+      }
+
       return {
         isCorrect,
         gameOver: tower.gameOver,
@@ -149,6 +204,8 @@ const service = {
         row,
         col,
         selectedBoxes: tower.selectedBoxes,
+        newBalance,
+        walletType: tower.walletType || "demo",
       };
     } catch (error) {
       throw new Error(error.message || "Failed to reveal box");
@@ -161,6 +218,9 @@ const service = {
       if (!tower) {
         throw new Error("No active game found");
       }
+
+      const walletType = tower.walletType || "demo";
+      let newBalance = null;
 
       if (!tower.gameOver && !tower.gameWon) {
         // Calculate profit based on current progress
@@ -175,6 +235,25 @@ const service = {
 
         // Reveal all boxes when checking out
         this.revealAllBoxes(tower.grid);
+
+        // Settle the cashout exactly once: claim the round's `settled` flag
+        // atomically before crediting, so racing checkouts can't pay twice.
+        const claim = await Tower.findOneAndUpdate(
+          { _id: tower._id, settled: { $ne: true } },
+          { $set: { settled: true } }
+        );
+        if (claim && tower.profit > 0) {
+          const credit = await creditGameWin(userId, {
+            gameKey: "tower",
+            amount: tower.profit,
+            walletType,
+          });
+          newBalance = credit.balance;
+        }
+      } else {
+        // A won round was already credited at the winning reveal; a lost
+        // round keeps its debit. Nothing to move — just report the balance.
+        newBalance = await getGameBalance(userId, walletType);
       }
 
       // Ensure all required fields are present
@@ -204,6 +283,8 @@ const service = {
         grid: tower.grid,
         profit: tower.profit,
         loss: tower.loss,
+        newBalance,
+        walletType,
       };
     } catch (error) {
       throw new Error(error.message || "Failed to checkout");

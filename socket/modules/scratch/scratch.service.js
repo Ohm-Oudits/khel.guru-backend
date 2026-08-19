@@ -1,6 +1,12 @@
 import User from "../../../models/user.model.js";
 import Game from "../../../models/game.model.js";
 import ScratchGame from "../../../models/games/scratch.model.js";
+import {
+  debitGameStake,
+  creditGameWin,
+  refundGameStake,
+  resolveGameWalletType,
+} from "../../../services/casinoWallet.service.js";
 
 const balloonTypes = ["#F28B82", "#FBBC05", "#34A853", "#4285F4", "#9A67EA"];
 const diamondTypes = ["red", "blue", "green", "yellow", "purple"];
@@ -51,7 +57,13 @@ const service = {
     }
   },
 
-  async createGame(userId, betAmount, isAutoBet = false, numberOfBets = 0) {
+  async createGame(
+    userId,
+    betAmount,
+    isAutoBet = false,
+    numberOfBets = 0,
+    walletType = "demo"
+  ) {
     console.log(`🎮 Creating new game for user ${userId}:`, {
       betAmount,
       isAutoBet,
@@ -71,20 +83,20 @@ const service = {
         throw new Error("User not found");
       }
 
-      // Check if user has enough balance
-      if (user.balance < betAmount) {
-        console.log(`⚠️ Insufficient balance for user ${userId}:`, {
-          currentBalance: user.balance,
-          requiredAmount: betAmount,
-        });
-        throw new Error("Insufficient balance");
-      }
+      const resolvedWalletType = resolveGameWalletType(walletType);
 
-      // Deduct bet amount from user balance
-      user.balance -= betAmount;
-      await user.save();
-      console.log(`💰 Updated balance for user ${userId}:`, {
-        newBalance: user.balance,
+      // Debit the stake from the wallet (atomic, balance-floor guarded).
+      const debit = await debitGameStake(userId, {
+        gameKey: "scratch",
+        amount: betAmount,
+        walletType: resolvedWalletType,
+      });
+      if (debit.error) {
+        console.log(`⚠️ Stake debit rejected for user ${userId}:`, debit.error);
+        throw new Error(debit.error);
+      }
+      console.log(`💰 Stake debited for user ${userId}:`, {
+        newBalance: debit.balance,
         deductedAmount: betAmount,
       });
 
@@ -105,9 +117,20 @@ const service = {
         grid,
         isAutoBet,
         remainingBets: isAutoBet ? numberOfBets - 1 : 0,
+        walletType: resolvedWalletType,
       });
 
-      await scratchGame.save();
+      try {
+        await scratchGame.save();
+      } catch (saveError) {
+        // The round never came into existence: give the stake back.
+        await refundGameStake(userId, {
+          gameKey: "scratch",
+          amount: betAmount,
+          walletType: resolvedWalletType,
+        });
+        throw saveError;
+      }
       console.log(`✅ New game created successfully:`, {
         gameId: scratchGame._id,
         userId,
@@ -226,12 +249,32 @@ const service = {
         winAmount,
       });
 
+      // Claim the round atomically: only the caller that deletes the round
+      // document gets to credit the payout, so a double completion (e.g. two
+      // racing complete events) can never pay twice.
+      const claimed = await ScratchGame.findByIdAndDelete(gameId);
+      if (!claimed) {
+        console.error(`❌ Game ${gameId} already settled by another call`);
+        throw new Error("Game not found or already completed");
+      }
+      console.log(`✅ Game ${gameId} completed and deleted`);
+
+      const walletType = game.walletType || "demo";
+      // Credit the total payout (a 0 winAmount is a no-op loss).
+      const credit = await creditGameWin(game.userId, {
+        gameKey: "scratch",
+        amount: winAmount,
+        walletType,
+      });
+
       const gameResult = {
         completedGame: {
           ...game.toObject(),
           multiplier,
           winAmount,
           isCompleted: true,
+          newBalance: credit.balance,
+          walletType,
         },
       };
 
@@ -245,13 +288,11 @@ const service = {
           game.userId,
           game.betAmount,
           true,
-          game.remainingBets
+          game.remainingBets,
+          walletType
         );
         gameResult.newGame = newGame;
       }
-
-      await ScratchGame.findByIdAndDelete(gameId);
-      console.log(`✅ Game ${gameId} completed and deleted`);
 
       return gameResult;
     } catch (error) {

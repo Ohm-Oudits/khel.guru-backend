@@ -1,9 +1,15 @@
 import User from "../../../models/user.model.js";
 import Game from "../../../models/game.model.js";
 import parachuteGame from "./parachute.game.js";
+import {
+  debitGameStake,
+  creditGameWin,
+  refundGameStake,
+  resolveGameWalletType,
+} from "../../../services/casinoWallet.service.js";
 
 const service = {
-  async join(userId, betAmount, difficulty) {
+  async join(userId, betAmount, difficulty, walletType = "demo") {
     try {
       const game = await Game.findOne({ name: "parachute" });
       if (!game) {
@@ -15,13 +21,18 @@ const service = {
         return { error: "User not found" };
       }
 
-      // Check if user has sufficient balance
-      if (user.balance < betAmount) {
-        return { error: "Insufficient balance" };
-      }
+      const resolvedWalletType = resolveGameWalletType(walletType);
 
-      // Deduct bet amount from user balance
-      user.balance -= betAmount;
+      // Debit the stake exactly once, when the player commits to the round.
+      // A crash keeps this debit; a checkout credits stake x multiplier.
+      const debit = await debitGameStake(userId, {
+        gameKey: "parachute",
+        amount: betAmount,
+        walletType: resolvedWalletType,
+      });
+      if (debit.error) {
+        return { error: debit.error };
+      }
 
       // Update user's game history
       const gameIndex = user.continuedGames.findIndex(
@@ -35,11 +46,19 @@ const service = {
       game.gamesPlayed = game.gamesPlayed + 1;
 
       // Start the game
-      const gameResult = parachuteGame.startGame(userId, betAmount, difficulty);
+      const gameResult = parachuteGame.startGame(
+        userId,
+        betAmount,
+        difficulty,
+        resolvedWalletType
+      );
       if (gameResult.error) {
-        // Refund the bet if game start failed
-        user.balance += betAmount;
-        await user.save();
+        // The round never started: hand the stake back.
+        await refundGameStake(userId, {
+          gameKey: "parachute",
+          amount: debit.stake,
+          walletType: resolvedWalletType,
+        });
         return gameResult;
       }
 
@@ -49,6 +68,7 @@ const service = {
       return {
         success: true,
         gameState: gameResult.gameState,
+        newBalance: debit.balance,
       };
     } catch (error) {
       console.error("Join game error:", error);
@@ -58,28 +78,33 @@ const service = {
 
   async checkout(userId) {
     try {
-      const user = await User.findById(userId);
-      if (!user) {
-        return { error: "User not found" };
-      }
-
       const gameState = parachuteGame.getGameState(userId);
       if (!gameState) {
         return { error: "No active game found" };
       }
 
+      const walletType = gameState.walletType || "demo";
+
+      // parachuteGame.checkout is the exactly-once guard: it rejects a
+      // crashed or already-checked-out round and synchronously removes the
+      // game from activeGames, so a second checkout finds no active game.
       const checkoutResult = parachuteGame.checkout(userId);
       if (checkoutResult.error) {
         return checkoutResult;
       }
 
-      // Update user balance with winnings
-      user.balance += checkoutResult.winAmount;
-      await user.save();
+      // Credit the total payout (stake x cashout multiplier) exactly once.
+      const credit = await creditGameWin(userId, {
+        gameKey: "parachute",
+        amount: checkoutResult.winAmount,
+        walletType,
+      });
 
       return {
         success: true,
         ...checkoutResult,
+        newBalance: credit.balance,
+        walletType,
       };
     } catch (error) {
       console.error("Checkout error:", error);

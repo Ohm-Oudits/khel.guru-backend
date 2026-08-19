@@ -44,6 +44,18 @@ const blackjackGameSchema = new mongoose.Schema({
     type: Number,
     default: 0,
   },
+  // Wallet the stake(s) were debited from; winnings are credited back to it.
+  walletType: {
+    type: String,
+    enum: ["demo", "cash"],
+    default: "demo",
+  },
+  // Set atomically when the completed hand's money is settled, so a round is
+  // credited exactly once even when stand/hit/double race to complete it.
+  settled: {
+    type: Boolean,
+    default: false,
+  },
   gameState: {
     type: String,
     enum: ["betting", "playing", "dealer", "complete"],

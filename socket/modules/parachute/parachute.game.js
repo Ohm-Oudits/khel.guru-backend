@@ -10,7 +10,7 @@ class ParachuteGame {
     this.maxMultiplier = 100;
   }
 
-  startGame(userId, betAmount, difficulty = "medium") {
+  startGame(userId, betAmount, difficulty = "medium", walletType = "demo") {
     if (this.activeGames.has(userId)) {
       return { error: "Game already in progress" };
     }
@@ -19,6 +19,7 @@ class ParachuteGame {
       userId,
       betAmount: parseFloat(betAmount),
       difficulty,
+      walletType,
       multiplier: 1.0,
       startTime: Date.now(),
       isCrashed: false,

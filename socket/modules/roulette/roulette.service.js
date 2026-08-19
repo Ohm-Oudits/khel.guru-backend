@@ -1,6 +1,9 @@
 import User from "../../../models/user.model.js";
 import Game from "../../../models/game.model.js";
-import mongoose from "mongoose";
+import {
+  debitGameStake,
+  creditGameWin,
+} from "../../../services/casinoWallet.service.js";
 
 const service = {
   async join(userId) {
@@ -42,31 +45,23 @@ const service = {
       }
     );
 
-    const session = await mongoose.startSession();
-    session.startTransaction();
-
     try {
       console.log("[Roulette Service] Validating bet amount...");
-      const { bets, totalAmount } = betData;
+      const { bets, totalAmount, walletType = "demo" } = betData;
 
       if (totalAmount <= 0) {
         throw new Error("Invalid bet amount");
       }
 
-      const user = await User.findById(userId).session(session);
-      if (!user) {
-        throw new Error("User not found");
-      }
-
-      if (user.balance < totalAmount) {
-        console.error(
-          `[Roulette Service] Insufficient balance for user ${userId}:`,
-          {
-            required: totalAmount,
-            available: user.balance,
-          }
-        );
-        throw new Error("Insufficient balance");
+      // Debit the combined stake of every bet on the board once; losing
+      // bets keep this debit.
+      const debit = await debitGameStake(userId, {
+        gameKey: "roulette",
+        amount: totalAmount,
+        walletType,
+      });
+      if (debit.error) {
+        return { error: debit.error };
       }
 
       const result = Math.floor(Math.random() * 37);
@@ -93,11 +88,14 @@ const service = {
         }
       }
 
-      const balanceChange = totalWin - totalAmount;
-      user.balance += balanceChange;
-      await user.save({ session });
-
-      await session.commitTransaction();
+      // Credit the combined payout of the winning bets (stake + profit,
+      // since calculateWin returns amount * (multiplier + 1)) once.
+      const credit = await creditGameWin(userId, {
+        gameKey: "roulette",
+        amount: totalWin,
+        walletType,
+      });
+      const newBalance = credit.balance ?? debit.balance;
 
       console.log(
         `[Roulette Service] Bet placement completed for user ${userId}:`,
@@ -105,7 +103,7 @@ const service = {
           result,
           totalWin,
           totalLoss,
-          newBalance: user.balance,
+          newBalance,
         }
       );
 
@@ -115,17 +113,15 @@ const service = {
         betResults,
         totalWin,
         totalLoss,
-        newBalance: user.balance,
+        newBalance,
+        walletType,
       };
     } catch (error) {
       console.error(
         "[Roulette Service] Error in bet placement:",
         error.message
       );
-      await session.abortTransaction();
       throw error;
-    } finally {
-      session.endSession();
     }
   },
 

@@ -1,6 +1,10 @@
 import User from "../../../models/user.model.js";
 import Game from "../../../models/game.model.js";
 import mongoose from "mongoose";
+import {
+  debitGameStake,
+  creditGameWin,
+} from "../../../services/casinoWallet.service.js";
 
 const service = {
   async join(userId) {
@@ -33,16 +37,16 @@ const service = {
     }
   },
 
-  async placeBet(userId, betAmount, targetMultiplier) {
+  async placeBet(userId, betAmount, targetMultiplier, walletType = "demo") {
     try {
-      const user = await User.findById(userId);
-      if (!user) {
-        return { error: "User not found" };
-      }
-
-      // Check if user has enough balance
-      if (user.balance < betAmount) {
-        return { error: "Insufficient balance" };
+      // Debit the stake from the wallet first; a losing bet keeps this debit.
+      const debit = await debitGameStake(userId, {
+        gameKey: "limbo",
+        amount: betAmount,
+        walletType,
+      });
+      if (debit.error) {
+        return { error: debit.error };
       }
 
       // Generate random number between 1 and 100
@@ -53,8 +57,13 @@ const service = {
       const winAmount = isWin ? betAmount * targetMultiplier : 0;
       const profit = winAmount - betAmount;
 
-      // Update user balance
-      user.balance = user.balance - betAmount + winAmount;
+      // Credit winnings (stake + profit) on a win; a loss credits nothing.
+      const credit = await creditGameWin(userId, {
+        gameKey: "limbo",
+        amount: winAmount,
+        walletType,
+      });
+      const newBalance = credit.balance ?? debit.balance;
 
       // Create game record
       const gameRecord = {
@@ -68,14 +77,11 @@ const service = {
         timestamp: new Date(),
       };
 
-      // Save game record and update user
-      await Promise.all([
-        user.save(),
-        Game.findOneAndUpdate(
-          { name: "limbo" },
-          { $push: { history: gameRecord } }
-        ),
-      ]);
+      // Save game record
+      await Game.findOneAndUpdate(
+        { name: "limbo" },
+        { $push: { history: gameRecord } }
+      );
 
       return {
         success: true,
@@ -83,7 +89,8 @@ const service = {
           number: randomNumber,
           isWin,
           profit,
-          newBalance: user.balance,
+          newBalance,
+          walletType,
         },
       };
     } catch (error) {
