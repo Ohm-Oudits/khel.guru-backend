@@ -1,8 +1,17 @@
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
+import { generateAccountUid } from "../utils/accountUid.js";
 
 const UserSchema = new mongoose.Schema(
   {
+    accountUid: {
+      type: String,
+      unique: true,
+      sparse: true,
+      immutable: true,
+      index: true,
+      trim: true,
+    },
     username: { type: String, required: true, unique: true, trim: true },
     email: {
       type: String,
@@ -54,6 +63,27 @@ const UserSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// Assign the immutable account identifier exactly once per document lifetime.
+// Covers every creation path (register, Google, Telegram, X, instant register,
+// seed scripts) without controller changes. The unique index remains the final
+// race arbiter; the pre-check loop is the collision backstop.
+UserSchema.pre("validate", async function (next) {
+  if (this.accountUid) return next();
+  try {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const candidate = generateAccountUid();
+      const exists = await this.constructor.exists({ accountUid: candidate });
+      if (!exists) {
+        this.accountUid = candidate;
+        return next();
+      }
+    }
+    return next(new Error("Unable to allocate a unique accountUid"));
+  } catch (error) {
+    return next(error);
+  }
+});
 
 // Hash password before saving
 UserSchema.pre("save", async function (next) {

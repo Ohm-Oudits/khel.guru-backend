@@ -8,7 +8,8 @@
     "dev": "nodemon index.js",
     "dev:local": "node scripts/run-local-dev.js",
     "test": "node tests/run-tests.js",
-    "seed:dev-user": "node scripts/create-dev-user.js"
+    "seed:dev-user": "node scripts/create-dev-user.js",
+    "backfill:account-uids": "node scripts/backfill-account-uids.js"
   },
   "keywords": [],
   "author": "",

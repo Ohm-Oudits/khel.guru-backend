@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import nodemailer from "nodemailer";
 import User from "../models/user.model.js";
 import { revokeAuthSession, createAuthSession } from "../services/authSession.service.js";
+import { ensureDefaultWalletAccounts } from "../services/walletPlatform.service.js";
 
 dotenv.config();
 
@@ -84,6 +85,10 @@ const issueAuthResponse = async ({
 }) => {
   user.lastLoginAt = new Date();
   await user.save();
+
+  // Idempotent upsert: guarantees wallet accounts exist from the first auth
+  // response onward instead of lazily on first wallet touch.
+  await ensureDefaultWalletAccounts(user._id);
 
   const session = await createAuthSession({
     user,
