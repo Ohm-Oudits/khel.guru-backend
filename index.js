@@ -20,6 +20,7 @@ import walletRoutes from "./routes/wallet.route.js";
 import accountRoutes from "./routes/account.route.js";
 import securityRoutes from "./routes/security.route.js";
 import supportRoutes from "./routes/support.route.js";
+import adminRoutes from "./routes/admin.route.js";
 
 import setupBaccaratSocket from "./socket/modules/baccarat/baccarat.socket.js";
 import setupBlackjackSocket from "./socket/modules/blackjack/blackjack.socket.js";
@@ -123,6 +124,7 @@ app.get("/health", (req, res) => {
       "/api/wallet",
       "/api/cashier",
       "/api/support",
+      "/api/admin",
       "/api/sports",
       "/api/casino",
     ],
@@ -165,6 +167,7 @@ app.use("/api/cashier", walletRoutes);
 app.use("/api/account", accountRoutes);
 app.use("/api/security", securityRoutes);
 app.use("/api/support", supportRoutes);
+app.use("/api/admin", adminRoutes);
 
 // 404 handler for unknown routes
 app.use(notFound);
