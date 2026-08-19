@@ -24,7 +24,6 @@ router.post("/login", login);
 router.post("/google-auth", googleAuth);
 router.post("/telegram-auth", telegramAuth);
 router.post("/x-auth", xAuth);
-router.post("/instant-register", instantRegister);
 
 // Password reset routes
 router.post("/forgot-password", forgotPassword);
