@@ -29,7 +29,7 @@ class RateLimiter {
   isAllowed(identifier) {
     const now = Date.now();
     const windowMs = parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 900000; // 15 minutes
-    const maxRequests = parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100;
+    const maxRequests = parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 1000;
 
     if (!this.requests.has(identifier)) {
       this.requests.set(identifier, {
