@@ -27,15 +27,20 @@ const getAccount = async (userId, walletType) => {
 // Atomic stake debit with a balance-floor guard. Returns { account } on
 // success or { error } when the balance is insufficient / amount invalid.
 export const debitGameStake = async (userId, { gameKey, amount, walletType = "demo" }) => {
-  let stake;
-  try {
-    stake = normalizeAmount(amount);
-  } catch {
-    return { error: "Invalid bet amount" };
-  }
-
   const account = await getAccount(userId, walletType);
   if (!account) return { error: "Wallet account not available" };
+
+  // Allow a zero stake as a valid no-op so games can be played/tested without
+  // spending balance. Nothing is debited and no ledger entry is written.
+  const numeric = Number(amount);
+  if (!Number.isFinite(numeric) || numeric < 0) {
+    return { error: "Invalid bet amount" };
+  }
+  if (numeric === 0) {
+    return { account, stake: 0, balance: account.availableBalance };
+  }
+
+  const stake = normalizeAmount(numeric);
 
   const updated = await WalletAccount.findOneAndUpdate(
     { _id: account._id, status: "active", availableBalance: { $gte: stake } },
