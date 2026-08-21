@@ -117,6 +117,10 @@ const baccaratSchema = new mongoose.Schema({
     type: Date,
     default: Date.now,
   },
+  nonce: { type: Number },
+  clientSeed: { type: String },
+  serverSeedHash: { type: String },
+  serverSeed: { type: String },
 });
 
 // Update timestamps on save

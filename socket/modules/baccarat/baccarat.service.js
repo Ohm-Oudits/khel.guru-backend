@@ -9,6 +9,63 @@ import {
   getGameBalance,
   resolveGameWalletType,
 } from "../../../services/casinoWallet.service.js";
+import {
+  createSeedRecordPayload,
+  takeFairnessFloats,
+} from "../../../services/provablyFair.service.js";
+import {
+  BACCARAT_EVENT_COUNT,
+  buildCardFairnessPayload,
+  cardsFromFloats,
+  toBaccaratCard,
+} from "../../../services/cardFairness.js";
+
+const buildBaccaratShoe = () => {
+  const payload = createSeedRecordPayload({
+    gameKey: "baccarat",
+    clientSeed: "baccarat-public",
+  });
+  const floats = takeFairnessFloats({
+    serverSeed: payload.serverSeed,
+    clientSeed: payload.clientSeed,
+    nonce: 0,
+    count: BACCARAT_EVENT_COUNT,
+  });
+  return {
+    deck: cardsFromFloats(floats).map(toBaccaratCard),
+    nonce: 0,
+    clientSeed: payload.clientSeed,
+    serverSeed: payload.serverSeed,
+    serverSeedHash: payload.serverSeedHash,
+  };
+};
+
+const serializeBaccarat = (game, { includeDeck = false } = {}) => {
+  const completed = game.status === "completed";
+  return {
+    gameId: game.gameId,
+    status: game.status,
+    currentRound: game.currentRound,
+    playerCards: game.playerCards,
+    bankerCards: game.bankerCards,
+    playerScore: game.playerScore,
+    bankerScore: game.bankerScore,
+    winner: game.winner,
+    bets: game.bets,
+    ...(includeDeck ? { deck: game.deck } : {}),
+    fairness: buildCardFairnessPayload(
+      {
+        gameKey: "baccarat",
+        nonce: game.nonce,
+        clientSeed: game.clientSeed,
+        serverSeedHash: game.serverSeedHash,
+        serverSeed: game.serverSeed,
+        dealIndex: (game.playerCards?.length || 0) + (game.bankerCards?.length || 0),
+      },
+      { revealServerSeed: completed }
+    ),
+  };
+};
 
 const service = {
   async join(userId) {
@@ -22,11 +79,16 @@ const service = {
       });
 
       if (!game) {
+        const shoe = buildBaccaratShoe();
         game = new Baccarat({
           gameId: `baccarat_${Date.now()}`,
           status: "waiting",
+          deck: shoe.deck,
+          nonce: shoe.nonce,
+          clientSeed: shoe.clientSeed,
+          serverSeed: shoe.serverSeed,
+          serverSeedHash: shoe.serverSeedHash,
         });
-        game.createNewDeck();
         await game.save({ session });
       }
 
@@ -57,16 +119,7 @@ const service = {
 
       return {
         success: true,
-        gameId: game.gameId,
-        status: game.status,
-        currentRound: game.currentRound,
-        deck: game.deck,
-        playerCards: game.playerCards,
-        bankerCards: game.bankerCards,
-        playerScore: game.playerScore,
-        bankerScore: game.bankerScore,
-        winner: game.winner,
-        bets: game.bets,
+        ...serializeBaccarat(game),
       };
     } catch (error) {
       await session.abortTransaction();
@@ -133,16 +186,7 @@ const service = {
         success: true,
         newBalance: debit.balance,
         walletType: resolvedWalletType,
-        game: {
-          gameId: game.gameId,
-          status: game.status,
-          bets: game.bets,
-          playerCards: game.playerCards,
-          bankerCards: game.bankerCards,
-          playerScore: game.playerScore,
-          bankerScore: game.bankerScore,
-          winner: game.winner,
-        },
+        game: serializeBaccarat(game),
       };
     } catch (error) {
       throw new Error(error.message || "An error occurred while placing bet");
@@ -215,16 +259,7 @@ const service = {
       return {
         success: true,
         balances,
-        game: {
-          gameId: game.gameId,
-          status: game.status,
-          playerCards: game.playerCards,
-          bankerCards: game.bankerCards,
-          playerScore: game.playerScore,
-          bankerScore: game.bankerScore,
-          winner: game.winner,
-          bets: game.bets,
-        },
+        game: serializeBaccarat(game),
       };
     } catch (error) {
       throw new Error(error.message || "An error occurred while dealing cards");
@@ -238,24 +273,23 @@ const service = {
         throw new Error("Game not found");
       }
 
-      // Create new game instance
+      const shoe = buildBaccaratShoe();
       const newGame = new Baccarat({
         gameId: `baccarat_${Date.now()}`,
         status: "waiting",
         currentRound: game.currentRound + 1,
+        deck: shoe.deck,
+        nonce: shoe.nonce,
+        clientSeed: shoe.clientSeed,
+        serverSeed: shoe.serverSeed,
+        serverSeedHash: shoe.serverSeedHash,
       });
 
-      newGame.createNewDeck();
       await newGame.save();
 
       return {
         success: true,
-        game: {
-          gameId: newGame.gameId,
-          status: newGame.status,
-          currentRound: newGame.currentRound,
-          deck: newGame.deck,
-        },
+        game: serializeBaccarat(newGame),
       };
     } catch (error) {
       throw new Error(

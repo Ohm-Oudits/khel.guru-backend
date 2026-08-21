@@ -108,6 +108,7 @@ const setupBaccaratSocket = () => {
               bankerScore: result.game.bankerScore,
               winner: result.game.winner,
               bets: result.game.bets,
+              fairness: result.game.fairness,
             });
 
           // Report the settled balance privately to the dealing player.
