@@ -134,6 +134,19 @@ const setupBlackjackSocket = () => {
       }
     });
 
+    socket.on("insurance", async ({ take } = {}) => {
+      try {
+        const result = await service.takeInsurance(userId, Boolean(take));
+        socket.emit("game_state", result);
+        if (result.winnings > 0) {
+          socket.emit("win", { amount: result.winnings });
+        }
+      } catch (err) {
+        console.error("Insurance error:", err);
+        socket.emit("error", { message: err.message });
+      }
+    });
+
     // Get current game state
     socket.on("get_game_state", async () => {
       try {

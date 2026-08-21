@@ -58,13 +58,38 @@ const blackjackGameSchema = new mongoose.Schema({
   },
   gameState: {
     type: String,
-    enum: ["betting", "playing", "dealer", "complete"],
+    enum: ["betting", "playing", "insurance", "dealer", "complete"],
     default: "betting",
   },
   result: {
     type: String,
-    enum: ["win", "lose", "draw", null],
+    enum: ["win", "lose", "draw", "blackjack", null],
     default: null,
+  },
+  doubled: {
+    type: Boolean,
+    default: false,
+  },
+  insuranceOffered: {
+    type: Boolean,
+    default: false,
+  },
+  insuranceTaken: {
+    type: Boolean,
+    default: false,
+  },
+  insuranceStake: {
+    type: Number,
+    default: 0,
+  },
+  insuranceResult: {
+    type: String,
+    enum: ["win", "lose", null],
+    default: null,
+  },
+  insuranceReturn: {
+    type: Number,
+    default: 0,
   },
   isSplit: {
     type: Boolean,
@@ -103,8 +128,19 @@ const blackjackGameSchema = new mongoose.Schema({
   createdAt: {
     type: Date,
     default: Date.now,
-    expires: 3600, // Automatically delete documents after 1 hour
+    expires: 3600,
   },
+  shoe: {
+    type: Array,
+    default: [],
+  },
+  dealIndex: {
+    type: Number,
+    default: 0,
+  },
+  nonce: { type: Number },
+  clientSeed: { type: String },
+  serverSeedHash: { type: String },
 });
 
 blackjackGameSchema.index({ userId: 1, gameState: 1 });

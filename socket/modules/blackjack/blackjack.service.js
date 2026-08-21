@@ -7,55 +7,34 @@ import {
   refundGameStake,
   resolveGameWalletType,
 } from "../../../services/casinoWallet.service.js";
-
-const CARD_SUITS = ["♦", "♥", "♠", "♣"];
-const CARD_VALUES = [
-  "2",
-  "3",
-  "4",
-  "5",
-  "6",
-  "7",
-  "8",
-  "9",
-  "10",
-  "J",
-  "Q",
-  "K",
-  "A",
-];
+import { consumeGameFloats } from "../../../services/fairnessConsume.service.js";
+import {
+  HILO_BLACKJACK_EVENT_COUNT,
+  buildCardFairnessPayload,
+  cardsFromFloats,
+  toBlackjackCard,
+} from "../../../services/cardFairness.js";
+import {
+  BLACKJACK_PAYOUT_FORMULAS,
+  compareHands,
+  dealerShowsAce,
+  isNaturalBlackjack,
+  settleInsurance,
+  settleMainHand,
+} from "./blackjack.payout.js";
 
 const getCardValue = (value) => {
   if (value === "A") return 11;
   if (["J", "Q", "K"].includes(value)) return 10;
-  return parseInt(value);
-};
-
-const createDeck = () => {
-  let deck = [];
-  for (let suit of CARD_SUITS) {
-    for (let value of CARD_VALUES) {
-      deck.push({
-        suit,
-        value,
-        id: `${suit}-${value}`,
-        flipped: true,
-      });
-    }
-  }
-  // Shuffle deck
-  for (let i = deck.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [deck[i], deck[j]] = [deck[j], deck[i]];
-  }
-  return deck;
+  return parseInt(value, 10);
 };
 
 const calculateHandValue = (cards) => {
   let value = 0;
   let aces = 0;
 
-  for (let card of cards) {
+  for (const card of cards) {
+    if (!card || card.hidden || card.value === "hidden") continue;
     if (card.value === "A") {
       aces += 1;
       value += 11;
@@ -64,7 +43,6 @@ const calculateHandValue = (cards) => {
     }
   }
 
-  // Adjust for aces
   while (value > 21 && aces > 0) {
     value -= 10;
     aces -= 1;
@@ -73,32 +51,129 @@ const calculateHandValue = (cards) => {
   return value;
 };
 
+const dealCard = (game, extra = {}) => {
+  const raw = game.shoe[game.dealIndex];
+  if (!raw) {
+    throw new Error("Card shoe exhausted");
+  }
+  const card = { ...toBlackjackCard(raw, game.dealIndex), ...extra };
+  game.dealIndex += 1;
+  return card;
+};
+
+const revealDealerHole = (game) => {
+  if (game.dealerCards?.[1]) {
+    game.dealerCards[1].flipped = true;
+    game.dealerCards[1].hidden = false;
+  }
+  game.dealerValue = calculateHandValue(game.dealerCards);
+};
+
+const holeShouldStayHidden = (game) =>
+  ["playing", "insurance"].includes(game.gameState);
+
+const buildSettlementSummary = (game) => {
+  if (game.gameState !== "complete") return null;
+  if (game.isSplit) {
+    const hands = (game.splitResults || []).map((result, index) => {
+      const settled = settleMainHand({
+        stake: game.splitBets[index] || 0,
+        result,
+        splitHand: true,
+      });
+      return { hand: index, ...settled, stake: game.splitBets[index] || 0 };
+    });
+    const totalReturn = hands.reduce((sum, hand) => sum + hand.totalReturn, 0);
+    const totalStake = hands.reduce((sum, hand) => sum + hand.stake, 0);
+    return {
+      kind: "split",
+      hands,
+      totalReturn,
+      multiplier: totalStake > 0 ? totalReturn / totalStake : 0,
+      insurance: game.insuranceResult
+        ? {
+            result: game.insuranceResult,
+            stake: game.insuranceStake || 0,
+            totalReturn: game.insuranceReturn || 0,
+          }
+        : null,
+    };
+  }
+
+  const main = settleMainHand({
+    stake: game.bet,
+    result: game.result,
+    playerNatural: isNaturalBlackjack(game.userCards) && !game.doubled,
+  });
+  return {
+    kind: main.result,
+    ...main,
+    stake: game.bet,
+    insurance: game.insuranceResult
+      ? {
+          result: game.insuranceResult,
+          stake: game.insuranceStake || 0,
+          totalReturn: game.insuranceReturn || 0,
+        }
+      : null,
+  };
+};
+
+const sanitizeBlackjack = (game) => {
+  if (!game) return game;
+  const obj = game.toObject ? game.toObject() : { ...game };
+  delete obj.shoe;
+  delete obj.deck;
+  const hideHole = holeShouldStayHidden(obj);
+  if (hideHole && Array.isArray(obj.dealerCards) && obj.dealerCards.length >= 2) {
+    const upCard = obj.dealerCards[0];
+    obj.dealerCards = [
+      upCard,
+      {
+        id: "dealer-hole",
+        suit: "hidden",
+        value: "hidden",
+        flipped: false,
+        hidden: true,
+      },
+    ];
+    obj.dealerValue = calculateHandValue([upCard]);
+  }
+  obj.fairness =
+    obj.nonce != null
+      ? buildCardFairnessPayload({
+          gameKey: "blackjack",
+          nonce: obj.nonce,
+          clientSeed: obj.clientSeed,
+          serverSeedHash: obj.serverSeedHash,
+          dealIndex: obj.dealIndex,
+        })
+      : null;
+  obj.payoutTable = BLACKJACK_PAYOUT_FORMULAS;
+  obj.settlement = buildSettlementSummary(obj);
+  return obj;
+};
+
 const service = {
   async join(userId) {
     try {
-      // First, check if user has an active game
-      let activeGame = await BlackjackGame.findOne({
+      const activeGame = await BlackjackGame.findOne({
         userId,
-        gameState: { $in: ["betting", "playing", "dealer"] },
+        gameState: { $in: ["betting", "playing", "insurance", "dealer"] },
       });
 
-      // If there's an active game, return it with full state
       if (activeGame) {
-        // Ensure we have the latest game state
-        const updatedGame = await BlackjackGame.findById(activeGame._id);
         return {
           success: true,
-          gameState: updatedGame,
+          gameState: sanitizeBlackjack(activeGame),
         };
       }
 
-      // Clean up any completed games for this user
       await BlackjackGame.deleteMany({
         userId,
         gameState: "complete",
       });
 
-      // If no active game, create a new one
       const game = await Game.findOne({ name: "blackjack" });
       if (!game) {
         throw new Error("Game not found");
@@ -109,11 +184,11 @@ const service = {
         throw new Error("User not found");
       }
 
-      // Create new game state
-      const deck = createDeck();
       const newGame = new BlackjackGame({
         userId,
-        deck,
+        deck: [],
+        shoe: [],
+        dealIndex: 0,
         gameState: "betting",
         userCards: [],
         dealerCards: [],
@@ -126,11 +201,16 @@ const service = {
         splitBets: [0, 0],
         splitResults: [null, null],
         activeHand: 0,
+        doubled: false,
+        insuranceOffered: false,
+        insuranceTaken: false,
+        insuranceStake: 0,
+        insuranceResult: null,
+        insuranceReturn: 0,
       });
 
       await newGame.save();
 
-      // Update user's continued games
       try {
         const gameIndex = user.continuedGames.findIndex(
           (gameId) => gameId.toString() === game._id.toString()
@@ -144,15 +224,13 @@ const service = {
         await Promise.all([user.save(), game.save()]);
       } catch (error) {
         console.error("Error updating user/game stats:", error);
-        // Continue even if stats update fails
       }
 
-      // Fetch the newly created game to ensure we have the complete state
       const createdGame = await BlackjackGame.findById(newGame._id);
 
       return {
         success: true,
-        gameState: createdGame,
+        gameState: sanitizeBlackjack(createdGame),
       };
     } catch (error) {
       console.error("Join game error:", error);
@@ -164,32 +242,32 @@ const service = {
 
   async placeBet(userId, betAmount, walletType = "demo") {
     try {
-      // Find active game or create new one if none exists
       let game = await BlackjackGame.findOne({
         userId,
-        gameState: { $in: ["betting", "playing", "dealer"] },
+        gameState: { $in: ["betting", "playing", "insurance", "dealer"] },
       });
-      console.log(game);
 
       if (!game) {
-        // Create new game if none exists
-        const result = await this.join(userId);
-        game = result.gameState;
+        await this.join(userId);
+        game = await BlackjackGame.findOne({
+          userId,
+          gameState: "betting",
+        });
       }
 
-      // If game is in playing or dealer state, return current state
+      if (!game) {
+        throw new Error("No active game found");
+      }
+
       if (game.gameState !== "betting") {
         return {
           success: true,
-          gameState: game,
+          gameState: sanitizeBlackjack(game),
         };
       }
 
       const resolvedWalletType = resolveGameWalletType(walletType);
 
-      // Claim the round atomically (betting -> playing) so the stake for a
-      // round can only ever be debited once, even if two place_bet events
-      // race each other.
       const claimed = await BlackjackGame.findOneAndUpdate(
         { _id: game._id, gameState: "betting" },
         {
@@ -198,58 +276,85 @@ const service = {
             bet: betAmount,
             walletType: resolvedWalletType,
             settled: false,
+            doubled: false,
+            result: null,
+            insuranceOffered: false,
+            insuranceTaken: false,
+            insuranceStake: 0,
+            insuranceResult: null,
+            insuranceReturn: 0,
           },
         },
         { new: true }
       );
       if (!claimed) {
-        // Another event already started this round; return its state.
         const current = await BlackjackGame.findById(game._id);
-        return { success: true, gameState: current };
+        return { success: true, gameState: sanitizeBlackjack(current) };
       }
       game = claimed;
 
-      // Debit the stake from the wallet (atomic, balance-floor guarded).
       const debit = await debitGameStake(userId, {
         gameKey: "blackjack",
         amount: betAmount,
         walletType: resolvedWalletType,
       });
       if (debit.error) {
-        // Release the claim: the round never started.
         await BlackjackGame.findByIdAndUpdate(game._id, {
           $set: { gameState: "betting", bet: 0 },
         });
         throw new Error(debit.error);
       }
 
-      // Deal initial cards
-      const dealSequence = async () => {
-        // Deal to player
-        const playerCard1 = game.deck.pop();
-        const playerCard2 = game.deck.pop();
-        game.userCards = [playerCard1, playerCard2];
-        game.userValue = calculateHandValue(game.userCards);
+      const fairness = await consumeGameFloats({
+        userId,
+        gameKey: "blackjack",
+        count: HILO_BLACKJACK_EVENT_COUNT,
+      });
+      game.shoe = cardsFromFloats(fairness.floats);
+      game.markModified("shoe");
+      game.dealIndex = 0;
+      game.nonce = fairness.nonce;
+      game.clientSeed = fairness.clientSeed;
+      game.serverSeedHash = fairness.serverSeedHash;
 
-        // Deal to dealer
-        const dealerCard1 = game.deck.pop();
-        const dealerCard2 = game.deck.pop();
-        dealerCard2.flipped = false; // Second dealer card is hidden
-        game.dealerCards = [dealerCard1, dealerCard2];
-        game.dealerValue = calculateHandValue([dealerCard1]); // Only count first card
+      const playerCard1 = dealCard(game);
+      const playerCard2 = dealCard(game);
+      game.userCards = [playerCard1, playerCard2];
+      game.userValue = calculateHandValue(game.userCards);
 
-        // Save the game state
+      const dealerCard1 = dealCard(game);
+      const dealerCard2 = dealCard(game, { flipped: false, hidden: true });
+      game.dealerCards = [dealerCard1, dealerCard2];
+      game.dealerValue = calculateHandValue([dealerCard1]);
+
+      const playerNatural = isNaturalBlackjack(game.userCards);
+      const dealerNatural = isNaturalBlackjack(game.dealerCards);
+
+      if (dealerShowsAce(game.dealerCards) && !playerNatural) {
+        game.gameState = "insurance";
+        game.insuranceOffered = true;
         await game.save();
-      };
+        return {
+          success: true,
+          gameState: sanitizeBlackjack(game),
+          newBalance: debit.balance,
+          walletType: resolvedWalletType,
+        };
+      }
 
-      await dealSequence();
+      if (playerNatural || dealerNatural) {
+        return await this.resolveNaturals(userId, game, {
+          playerNatural,
+          dealerNatural,
+          newBalance: debit.balance,
+        });
+      }
 
-      // Fetch the updated game state to ensure we have the latest data
-      const updatedGame = await BlackjackGame.findById(game._id);
+      await game.save();
 
       return {
         success: true,
-        gameState: updatedGame,
+        gameState: sanitizeBlackjack(game),
         newBalance: debit.balance,
         walletType: resolvedWalletType,
       };
@@ -259,12 +364,83 @@ const service = {
     }
   },
 
-  // Settle the money for a completed round exactly once. The `settled` flag
-  // is claimed atomically, so whichever completion path gets here first
-  // (stand, hit-bust, double-bust) is the only one that moves money.
-  // Wins credit the total payout (stake x2), draws refund the stake, and an
-  // unresolved split hand (the state machine completes the whole round when
-  // one hand busts) is voided — its stake is refunded.
+  async resolveNaturals(userId, game, { playerNatural, dealerNatural, newBalance }) {
+    revealDealerHole(game);
+    if (playerNatural && dealerNatural) {
+      game.result = "draw";
+    } else if (playerNatural) {
+      game.result = "blackjack";
+    } else {
+      game.result = "lose";
+    }
+    game.gameState = "complete";
+    await game.save();
+    const settlement = await this.settleGameMoney(userId, game);
+    return {
+      success: true,
+      gameState: sanitizeBlackjack(game),
+      winnings: settlement.winnings,
+      newBalance: settlement.newBalance ?? newBalance,
+    };
+  },
+
+  async takeInsurance(userId, take) {
+    const game = await BlackjackGame.findOne({
+      userId,
+      gameState: "insurance",
+    });
+    if (!game) {
+      throw new Error("Insurance is not available");
+    }
+
+    if (take) {
+      const insuranceStake = Number((game.bet / 2).toFixed(8));
+      const debit = await debitGameStake(userId, {
+        gameKey: "blackjack",
+        amount: insuranceStake,
+        walletType: game.walletType || "demo",
+      });
+      if (debit.error) {
+        throw new Error(debit.error);
+      }
+      game.insuranceTaken = true;
+      game.insuranceStake = insuranceStake;
+    } else {
+      game.insuranceTaken = false;
+      game.insuranceStake = 0;
+    }
+
+    const dealerNatural = isNaturalBlackjack(game.dealerCards);
+    const playerNatural = isNaturalBlackjack(game.userCards);
+    const insurance = settleInsurance({
+      insuranceStake: game.insuranceStake,
+      dealerNatural,
+    });
+    game.insuranceResult = insurance.result;
+    game.insuranceReturn = insurance.totalReturn;
+
+    if (dealerNatural) {
+      revealDealerHole(game);
+      game.result = playerNatural ? "draw" : "lose";
+      game.gameState = "complete";
+      await game.save();
+      const settlement = await this.settleGameMoney(userId, game);
+      return {
+        success: true,
+        gameState: sanitizeBlackjack(game),
+        winnings: settlement.winnings,
+        newBalance: settlement.newBalance,
+      };
+    }
+
+    game.gameState = "playing";
+    await game.save();
+    return {
+      success: true,
+      gameState: sanitizeBlackjack(game),
+    };
+  },
+
   async settleGameMoney(userId, game) {
     const claim = await BlackjackGame.findOneAndUpdate(
       { _id: game._id, settled: { $ne: true } },
@@ -278,27 +454,35 @@ const service = {
     let winTotal = 0;
     let refundTotal = 0;
 
+    const applyHand = (stake, result, extra = {}) => {
+      const settled = settleMainHand({ stake, result, ...extra });
+      if (settled.totalReturn <= 0) return;
+      if (settled.result === "draw") {
+        refundTotal += settled.totalReturn;
+      } else {
+        winTotal += settled.totalReturn;
+      }
+    };
+
     if (game.isSplit) {
       game.splitResults.forEach((result, index) => {
         const stake = game.splitBets[index] || 0;
-        if (result === "win") {
-          winTotal += stake * 2;
-        } else if (result === "draw") {
+        if (!result) {
           refundTotal += stake;
-        } else if (result !== "lose") {
-          // Hand never got adjudicated: void it and return the stake.
-          refundTotal += stake;
+          return;
         }
+        applyHand(stake, result, { splitHand: true });
       });
     } else {
-      if (game.result === "win") {
-        winTotal = game.bet * 2;
-      } else if (game.result === "draw") {
-        refundTotal = game.bet;
-      }
+      applyHand(game.bet, game.result, {
+        playerNatural: isNaturalBlackjack(game.userCards) && !game.doubled,
+      });
     }
 
-    // A zero-amount credit is a no-op that still reports the balance.
+    if ((game.insuranceReturn || 0) > 0) {
+      winTotal += game.insuranceReturn;
+    }
+
     const credit = await creditGameWin(userId, {
       gameKey: "blackjack",
       amount: winTotal,
@@ -317,6 +501,47 @@ const service = {
     return { winnings: winTotal + refundTotal, newBalance };
   },
 
+  async playDealerAndSettle(userId, game) {
+    game.gameState = "dealer";
+    revealDealerHole(game);
+
+    while (game.dealerValue < 17 && game.dealIndex < (game.shoe?.length || 0)) {
+      const newCard = dealCard(game);
+      game.dealerCards.push(newCard);
+      game.dealerValue = calculateHandValue(game.dealerCards);
+    }
+
+    if (game.isSplit) {
+      game.splitResults = game.splitValues.map((value) => {
+        if (value > 21) return "lose";
+        return compareHands(value, game.dealerValue);
+      });
+    } else if (game.userValue > 21) {
+      game.result = "lose";
+    } else {
+      const outcome = compareHands(game.userValue, game.dealerValue);
+      if (
+        outcome === "win" &&
+        isNaturalBlackjack(game.userCards) &&
+        !game.doubled
+      ) {
+        game.result = "blackjack";
+      } else {
+        game.result = outcome;
+      }
+    }
+
+    game.gameState = "complete";
+    await game.save();
+    const settlement = await this.settleGameMoney(userId, game);
+    return {
+      success: true,
+      gameState: sanitizeBlackjack(game),
+      winnings: settlement.winnings,
+      newBalance: settlement.newBalance,
+    };
+  },
+
   async hit(userId) {
     try {
       const game = await BlackjackGame.findOne({
@@ -327,49 +552,64 @@ const service = {
         throw new Error("No active game found");
       }
 
-      const newCard = game.deck.pop();
+      const newCard = dealCard(game);
       if (game.isSplit) {
-        // Handle split hand
         game.splitHands[game.activeHand].push(newCard);
         game.splitValues[game.activeHand] = calculateHandValue(
           game.splitHands[game.activeHand]
         );
       } else {
-        // Handle regular hand
         game.userCards.push(newCard);
         game.userValue = calculateHandValue(game.userCards);
       }
 
-      // Check for bust
       const currentValue = game.isSplit
         ? game.splitValues[game.activeHand]
         : game.userValue;
+
       if (currentValue > 21) {
-        game.gameState = "complete";
         if (game.isSplit) {
           game.splitResults[game.activeHand] = "lose";
-        } else {
-          game.result = "lose";
+          if (game.activeHand === 0) {
+            game.activeHand = 1;
+            await game.save();
+            return {
+              success: true,
+              gameState: sanitizeBlackjack(game),
+            };
+          }
+          const otherAlive = game.splitValues[0] <= 21;
+          if (!otherAlive) {
+            game.gameState = "complete";
+            await game.save();
+            const settlement = await this.settleGameMoney(userId, game);
+            return {
+              success: true,
+              gameState: sanitizeBlackjack(game),
+              winnings: settlement.winnings,
+              newBalance: settlement.newBalance,
+            };
+          }
+          return await this.playDealerAndSettle(userId, game);
         }
-      }
 
-      await game.save();
-
-      // A bust completes the round: settle its money exactly once (a lost
-      // single hand credits nothing; an unresolved split hand is refunded).
-      if (game.gameState === "complete") {
+        game.gameState = "complete";
+        game.result = "lose";
+        revealDealerHole(game);
+        await game.save();
         const settlement = await this.settleGameMoney(userId, game);
         return {
           success: true,
-          gameState: game,
+          gameState: sanitizeBlackjack(game),
           winnings: settlement.winnings,
           newBalance: settlement.newBalance,
         };
       }
 
+      await game.save();
       return {
         success: true,
-        gameState: game,
+        gameState: sanitizeBlackjack(game),
       };
     } catch (error) {
       throw new Error(error.message || "An error occurred while hitting");
@@ -387,72 +627,15 @@ const service = {
       }
 
       if (game.isSplit && game.activeHand === 0) {
-        // Move to second split hand
         game.activeHand = 1;
         await game.save();
         return {
           success: true,
-          gameState: game,
+          gameState: sanitizeBlackjack(game),
         };
       }
 
-      // Dealer's turn
-      game.gameState = "dealer";
-      game.dealerCards[1].flipped = true; // Reveal hidden card
-      game.dealerValue = calculateHandValue(game.dealerCards);
-
-      // Dealer hits on 16, stands on 17
-      while (game.dealerValue < 17 && game.deck.length > 0) {
-        const newCard = game.deck.pop();
-        game.dealerCards.push(newCard);
-        game.dealerValue = calculateHandValue(game.dealerCards);
-      }
-
-      // Determine winner
-      if (game.isSplit) {
-        game.splitResults = game.splitValues.map((value) => {
-          if (value > 21) return "lose";
-          if (game.dealerValue > 21) return "win";
-          if (value > game.dealerValue) return "win";
-          if (value < game.dealerValue) return "lose";
-          return "draw";
-        });
-      } else {
-        if (game.userValue > 21) {
-          game.result = "lose";
-        } else if (game.dealerValue > 21) {
-          game.result = "win";
-        } else if (game.userValue > game.dealerValue) {
-          game.result = "win";
-        } else if (game.userValue < game.dealerValue) {
-          game.result = "lose";
-        } else {
-          game.result = "draw";
-        }
-      }
-
-      game.gameState = "complete";
-      await game.save();
-
-      // Settle the round's money exactly once through the wallet service:
-      // wins credit stake x2, draws (pushes) refund the stake.
-      const settlement = await this.settleGameMoney(userId, game);
-
-      // Delete the completed game after a short delay
-      setTimeout(async () => {
-        try {
-          await BlackjackGame.deleteOne({ _id: game._id });
-        } catch (error) {
-          console.error("Error deleting completed game:", error);
-        }
-      }, 5000); // Wait 5 seconds before deleting
-
-      return {
-        success: true,
-        gameState: game,
-        winnings: settlement.winnings,
-        newBalance: settlement.newBalance,
-      };
+      return await this.playDealerAndSettle(userId, game);
     } catch (error) {
       console.error("Stand error:", error);
       throw new Error(error.message || "An error occurred while standing");
@@ -476,8 +659,6 @@ const service = {
         throw new Error("Cannot split: cards must be a pair");
       }
 
-      // Claim the split atomically so the additional stake can only be
-      // debited once per round.
       const claimed = await BlackjackGame.findOneAndUpdate(
         { _id: game._id, gameState: "playing", isSplit: false },
         { $set: { isSplit: true } }
@@ -486,21 +667,18 @@ const service = {
         throw new Error("Cannot split: hand already split");
       }
 
-      // Debit the additional stake for the second hand.
       const debit = await debitGameStake(userId, {
         gameKey: "blackjack",
         amount: game.bet,
         walletType: game.walletType || "demo",
       });
       if (debit.error) {
-        // Release the claim: the split never happened.
         await BlackjackGame.findByIdAndUpdate(game._id, {
           $set: { isSplit: false },
         });
         throw new Error("Insufficient balance for split");
       }
 
-      // Create split hands
       game.isSplit = true;
       game.splitHands = [[game.userCards[0]], [game.userCards[1]]];
       game.splitValues = [
@@ -511,9 +689,8 @@ const service = {
       game.splitResults = [null, null];
       game.activeHand = 0;
 
-      // Deal one card to each split hand
-      const card1 = game.deck.pop();
-      const card2 = game.deck.pop();
+      const card1 = dealCard(game);
+      const card2 = dealCard(game);
       game.splitHands[0].push(card1);
       game.splitHands[1].push(card2);
       game.splitValues[0] = calculateHandValue(game.splitHands[0]);
@@ -522,7 +699,7 @@ const service = {
       await game.save();
       return {
         success: true,
-        gameState: game,
+        gameState: sanitizeBlackjack(game),
         newBalance: debit.balance,
       };
     } catch (error) {
@@ -546,7 +723,6 @@ const service = {
         );
       }
 
-      // Debit the additional stake for the double.
       const debit = await debitGameStake(userId, {
         gameKey: "blackjack",
         amount: game.bet,
@@ -556,36 +732,30 @@ const service = {
         throw new Error("Insufficient balance for double");
       }
 
-      // Double the bet
       game.bet *= 2;
+      game.doubled = true;
 
-      // Deal one card
-      const newCard = game.deck.pop();
+      const newCard = dealCard(game);
       game.userCards.push(newCard);
       game.userValue = calculateHandValue(game.userCards);
 
-      // Persist the doubled bet and dealt card before settling, so the
-      // stand path (which re-reads the game) settles the doubled stake.
       await game.save();
 
-      // Auto stand after double
       if (game.userValue <= 21) {
-        return await this.stand(userId);
-      } else {
-        game.gameState = "complete";
-        game.result = "lose";
-        await game.save();
-
-        // A bust after doubling completes the round: settle exactly once
-        // (a loss credits nothing, but the round is marked settled).
-        const settlement = await this.settleGameMoney(userId, game);
-        return {
-          success: true,
-          gameState: game,
-          winnings: settlement.winnings,
-          newBalance: settlement.newBalance,
-        };
+        return await this.playDealerAndSettle(userId, game);
       }
+
+      game.gameState = "complete";
+      game.result = "lose";
+      revealDealerHole(game);
+      await game.save();
+      const settlement = await this.settleGameMoney(userId, game);
+      return {
+        success: true,
+        gameState: sanitizeBlackjack(game),
+        winnings: settlement.winnings,
+        newBalance: settlement.newBalance,
+      };
     } catch (error) {
       throw new Error(error.message || "An error occurred while doubling");
     }
@@ -607,7 +777,7 @@ const service = {
 
       return {
         success: true,
-        gameState: game,
+        gameState: sanitizeBlackjack(game),
       };
     } catch (error) {
       console.error("Get game state error:", error);
