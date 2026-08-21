@@ -48,7 +48,9 @@ const setupHiloSocket = () => {
     socket.on("add_game", async (data) => {
       try {
         const { betAmount, walletType } = data;
-        if (!betAmount) {
+        // Allow a 0 stake (testing); reject only a missing/NaN amount. A
+        // negative amount is still rejected downstream by the wallet debit.
+        if (betAmount == null || Number.isNaN(Number(betAmount))) {
           throw new Error("Missing bet amount");
         }
 

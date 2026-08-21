@@ -46,7 +46,11 @@ const setupTwistSocket = () => {
       try {
         const { betAmount, walletType } = data || {};
 
-        if (!betAmount) {
+        if (
+          betAmount == null ||
+          Number.isNaN(Number(betAmount)) ||
+          Number(betAmount) < 0
+        ) {
           socket.emit("error", { message: "Missing bet amount" });
           return;
         }

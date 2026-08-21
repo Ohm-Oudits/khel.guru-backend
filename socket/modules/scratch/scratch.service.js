@@ -12,19 +12,54 @@ const balloonTypes = ["#F28B82", "#FBBC05", "#34A853", "#4285F4", "#9A67EA"];
 const diamondTypes = ["red", "blue", "green", "yellow", "purple"];
 
 const displaySlots = [
-  { diamonds: 8, different: 0, free: 0, multiplier: 100.0 },
-  { diamonds: 7, different: 0, free: 1, multiplier: 10.0 },
-  { diamonds: 6, different: 0, free: 2, multiplier: 7.0 },
-  { diamonds: 5, different: 3, free: 0, multiplier: 5.0 },
-  { diamonds: 5, different: 0, free: 3, multiplier: 3.5 },
-  { diamonds: 4, different: 4, free: 0, multiplier: 2.35 },
-  { diamonds: 4, different: 3, free: 1, multiplier: 1.45 },
-  { diamonds: 4, different: 0, free: 4, multiplier: 0.85 },
-  { diamonds: 3, different: 3, free: 2, multiplier: 0.45 },
-  { diamonds: 3, different: 2, free: 3, multiplier: 0.15 },
-  { diamonds: 2, different: 2, free: 4, multiplier: 0.0 },
-  { diamonds: 2, different: 0, free: 6, multiplier: 0.0 },
+  { diamonds: 8, different: 0, free: 1, multiplier: 100.0 },
+  { diamonds: 7, different: 0, free: 2, multiplier: 10.0 },
+  { diamonds: 6, different: 0, free: 3, multiplier: 7.0 },
+  { diamonds: 5, different: 4, free: 0, multiplier: 5.0 },
+  { diamonds: 5, different: 3, free: 1, multiplier: 3.5 },
+  { diamonds: 4, different: 4, free: 1, multiplier: 2.35 },
+  { diamonds: 4, different: 3, free: 2, multiplier: 1.45 },
+  { diamonds: 4, different: 2, free: 3, multiplier: 0.85 },
+  { diamonds: 3, different: 3, free: 3, multiplier: 0.45 },
+  { diamonds: 3, different: 2, free: 4, multiplier: 0.15 },
+  { diamonds: 2, different: 2, free: 5, multiplier: 0.0 },
+  { diamonds: 2, different: 0, free: 7, multiplier: 0.0 },
 ];
+
+const GRID_CELLS = 9;
+
+function countPatternFromGrid(grid) {
+  const counts = {};
+  for (const box of grid) {
+    const color = box.diamondColor;
+    counts[color] = (counts[color] || 0) + 1;
+  }
+
+  const ranked = Object.entries(counts)
+    .map(([color, count]) => ({ color, count }))
+    .sort((a, b) => b.count - a.count || a.color.localeCompare(b.color));
+
+  const mainCount = ranked[0]?.count || 0;
+  const secondCount = ranked[1]?.count || 0;
+  const freeCount = GRID_CELLS - mainCount - secondCount;
+
+  return {
+    mainColor: ranked[0]?.color || null,
+    secondColor: ranked[1]?.color || null,
+    mainCount,
+    secondCount,
+    freeCount,
+  };
+}
+
+function findMatchingPattern(mainCount, secondCount, freeCount) {
+  return displaySlots.find(
+    (slot) =>
+      slot.diamonds === mainCount &&
+      slot.different === secondCount &&
+      slot.free === freeCount
+  );
+}
 
 const service = {
   async getActiveGame(userId) {
@@ -164,7 +199,12 @@ const service = {
         throw new Error("Box already revealed");
       }
 
-      // Update grid
+      // Update grid — only the newly clicked box should animate client-side.
+      game.grid.forEach((box, i) => {
+        if (i !== boxIndex) {
+          box.animating = false;
+        }
+      });
       game.grid[boxIndex].revealed = true;
       game.grid[boxIndex].animating = true;
 
@@ -204,18 +244,15 @@ const service = {
         throw new Error("Game not found or already completed");
       }
 
-      // Calculate multiplier based on diamond patterns
-      const diamondCounts = Object.fromEntries(game.diamondCounts);
-      const mainColor = Object.entries(diamondCounts).reduce((a, b) =>
-        b[1].count > a[1].count ? b : a
-      )[0];
-      const secondColor = Object.entries(diamondCounts).reduce((a, b) =>
-        b[0] !== mainColor && b[1].count > a[1].count ? b : a
-      )[0];
-
-      const mainCount = diamondCounts[mainColor].count;
-      const secondCount = diamondCounts[secondColor].count;
-      const freeCount = 9 - mainCount - secondCount;
+      // Grid is authoritative: all 9 cells are decided at game creation.
+      const patternStats = countPatternFromGrid(game.grid);
+      const {
+        mainColor,
+        secondColor,
+        mainCount,
+        secondCount,
+        freeCount,
+      } = patternStats;
 
       console.log(`📊 Game pattern:`, {
         mainColor,
@@ -225,13 +262,7 @@ const service = {
         freeCount,
       });
 
-      // Find matching pattern
-      const pattern = displaySlots.find(
-        (slot) =>
-          slot.diamonds === mainCount &&
-          slot.different === secondCount &&
-          slot.free === freeCount
-      );
+      const pattern = findMatchingPattern(mainCount, secondCount, freeCount);
 
       const multiplier = pattern ? pattern.multiplier : 0;
       const winAmount = game.betAmount * multiplier;

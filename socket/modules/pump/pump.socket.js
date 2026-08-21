@@ -20,7 +20,7 @@ const setupPumpSocket = () => {
         return next(new Error("Invalid token"));
       }
 
-      socket.data.userId = decoded.id;
+      socket.data.userId = String(decoded.id);
       next();
     } catch (err) {
       console.error("Token verification failed:", err.message);
@@ -34,7 +34,15 @@ const setupPumpSocket = () => {
 
     socket.join(`pump:${userId}`);
 
-    socket.on("add_game", async (data) => {
+    const sendHistory = () => {
+      socket.emit("round_history", { history: service.getHistory(userId) });
+    };
+
+    sendHistory();
+
+    socket.on("get_history", sendHistory);
+
+    socket.on("add_game", async () => {
       try {
         await service.join(userId);
       } catch (err) {
@@ -42,16 +50,26 @@ const setupPumpSocket = () => {
       }
     });
 
-    // Stake commitment: debit once, or reject the bet.
     socket.on("place_bet", async (data) => {
       try {
-        const { betAmount, walletType } = data || {};
-        if (!betAmount || Number(betAmount) <= 0) {
+        socket.data.roundSettled = false;
+
+        const { betAmount, walletType, risk } = data || {};
+        if (
+          betAmount == null ||
+          Number.isNaN(Number(betAmount)) ||
+          Number(betAmount) <= 0
+        ) {
           socket.emit("error", { message: "Invalid bet amount" });
           return;
         }
 
-        const result = await service.placeBet(userId, betAmount, walletType);
+        const result = await service.startRound(
+          userId,
+          betAmount,
+          risk,
+          walletType
+        );
         if (result.error) {
           socket.emit("error", { message: result.error });
           return;
@@ -62,49 +80,107 @@ const setupPumpSocket = () => {
           newBalance: result.newBalance,
           walletType: result.walletType,
         });
+
+        socket.emit("round_started", {
+          multiplier: result.multiplier,
+          ladder: result.ladder,
+          risk: result.risk,
+          fairness: result.fairness,
+        });
       } catch (err) {
         console.error("Error in pump place_bet:", err);
         socket.emit("error", { message: err.message });
       }
     });
 
-    // Cashout: credit stake x multiplier once for the active bet.
-    socket.on("cash_out", async (data) => {
+    socket.on("pump", async () => {
       try {
-        const { multiplier } = data || {};
-        const result = await service.cashOut(userId, multiplier);
+        const result = service.pump(userId);
         if (result.error) {
+          socket.emit("error", { message: result.error });
+          return;
+        }
+
+        if (result.popped) {
+          if (socket.data.roundSettled) return;
+          socket.data.roundSettled = true;
+
+          const bust = await service.settlePop(userId, result.multiplier);
+          const history = bust.history || service.getHistory(userId);
+
+          socket.emit("balloon_popped", {
+            multiplier: bust.multiplier ?? result.multiplier,
+            popAt: bust.popAt ?? result.popAt,
+            newBalance: bust.newBalance,
+            history,
+          });
+          socket.emit("round_history", { history });
+          return;
+        }
+
+        socket.emit("pump_success", {
+          multiplier: result.multiplier,
+          gameState: result.gameState,
+        });
+      } catch (err) {
+        console.error("Error in pump pump:", err);
+        socket.emit("error", { message: err.message });
+      }
+    });
+
+    socket.on("cash_out", async () => {
+      try {
+        if (socket.data.roundSettled) return;
+        socket.data.roundSettled = true;
+
+        const result = await service.cashOut(userId);
+        if (result.error) {
+          socket.data.roundSettled = false;
           socket.emit("error", { message: result.error });
           return;
         }
 
         socket.emit("cashout_success", {
           multiplier: result.multiplier,
+          popAt: result.popAt,
           payout: result.payout,
           newBalance: result.newBalance,
           walletType: result.walletType,
+          history: result.history,
         });
+        socket.emit("round_history", { history: result.history });
       } catch (err) {
+        socket.data.roundSettled = false;
         console.error("Error in pump cash_out:", err);
         socket.emit("error", { message: err.message });
       }
     });
 
-    // Bust: the balloon popped before a cashout; the stake stays debited.
     socket.on("bust", async () => {
       try {
+        if (socket.data.roundSettled) return;
+        socket.data.roundSettled = true;
+
         const result = await service.bust(userId);
+        const history = result.history || service.getHistory(userId);
+
         socket.emit("bet_busted", {
           newBalance: result.newBalance ?? null,
+          popAt: result.popAt ?? null,
+          multiplier: result.multiplier ?? null,
+          history,
         });
+        if (history?.length) {
+          socket.emit("round_history", { history });
+        }
       } catch (err) {
+        socket.data.roundSettled = false;
         console.error("Error in pump bust:", err);
         socket.emit("error", { message: err.message });
       }
     });
 
     socket.on("disconnect", () => {
-      // An unsettled bet is forfeited (pop semantics) on disconnect.
       service.clearBet(userId);
       console.log(`❌ User ${userId} disconnected from Pump`);
     });

@@ -1,16 +1,17 @@
 class ParachuteGame {
   constructor() {
     this.activeGames = new Map();
-    this.crashProbabilities = {
-      low: 0.005,
-      medium: 0.01,
-      high: 0.02,
-    };
     this.tickInterval = 100;
-    this.maxMultiplier = 100;
   }
 
-  startGame(userId, betAmount, difficulty = "medium", walletType = "demo") {
+  startGame(
+    userId,
+    betAmount,
+    difficulty = "medium",
+    walletType = "demo",
+    crashPoint = 1,
+    onCrash = null
+  ) {
     if (this.activeGames.has(userId)) {
       return { error: "Game already in progress" };
     }
@@ -20,11 +21,13 @@ class ParachuteGame {
       betAmount: parseFloat(betAmount),
       difficulty,
       walletType,
+      crashPoint: Number(crashPoint),
       multiplier: 1.0,
       startTime: Date.now(),
       isCrashed: false,
       hasCheckedOut: false,
       intervalId: null,
+      onCrash,
     };
 
     this.activeGames.set(userId, gameState);
@@ -44,21 +47,16 @@ class ParachuteGame {
       }
 
       const timeElapsed = (Date.now() - gameState.startTime) / 1000;
-      const newMultiplier = Math.exp(
+      const live = Math.exp(
         timeElapsed / this.getDifficultyMultiplier(gameState.difficulty)
       );
 
-      if (newMultiplier >= this.maxMultiplier) {
+      if (live >= gameState.crashPoint) {
         this.crashGame(userId);
         return;
       }
 
-      gameState.multiplier = newMultiplier;
-
-      const crashProb = this.crashProbabilities[gameState.difficulty];
-      if (Math.random() < crashProb) {
-        this.crashGame(userId);
-      }
+      gameState.multiplier = Math.floor(live * 100) / 100;
     }, this.tickInterval);
   }
 
@@ -77,11 +75,35 @@ class ParachuteGame {
 
   crashGame(userId) {
     const gameState = this.activeGames.get(userId);
-    if (!gameState) return;
+    if (!gameState || gameState.isCrashed) return;
 
     gameState.isCrashed = true;
-    gameState.multiplier = Math.floor(gameState.multiplier * 100) / 100;
+    gameState.multiplier = Math.floor(gameState.crashPoint * 100) / 100;
+    const onCrash = gameState.onCrash;
+    const finalMultiplier = gameState.multiplier;
     this.stopGame(userId);
+    if (onCrash) {
+      onCrash({ multiplier: finalMultiplier, isCrashed: true });
+    }
+  }
+
+  forfeitGame(userId) {
+    const gameState = this.activeGames.get(userId);
+    if (!gameState || gameState.hasCheckedOut) return null;
+
+    if (!gameState.isCrashed) {
+      gameState.isCrashed = true;
+      gameState.multiplier = Math.floor(gameState.multiplier * 100) / 100;
+    }
+
+    const onCrash = gameState.onCrash;
+    const finalMultiplier = gameState.multiplier;
+    this.stopGame(userId);
+    if (onCrash) {
+      onCrash({ multiplier: finalMultiplier, isCrashed: true });
+    }
+
+    return { multiplier: finalMultiplier, isCrashed: true };
   }
 
   checkout(userId) {
@@ -90,14 +112,18 @@ class ParachuteGame {
       return { error: "Invalid checkout attempt" };
     }
 
+    const crashPoint = Math.floor(gameState.crashPoint * 100) / 100;
+    const cashoutMultiplier = Math.floor(gameState.multiplier * 100) / 100;
+
     gameState.hasCheckedOut = true;
-    gameState.multiplier = Math.floor(gameState.multiplier * 100) / 100;
+    gameState.multiplier = cashoutMultiplier;
     this.stopGame(userId);
 
     return {
       success: true,
-      multiplier: gameState.multiplier,
-      winAmount: gameState.betAmount * gameState.multiplier,
+      multiplier: cashoutMultiplier,
+      crashPoint,
+      winAmount: gameState.betAmount * cashoutMultiplier,
     };
   }
 

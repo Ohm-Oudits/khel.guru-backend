@@ -1,17 +1,150 @@
 import User from "../../../models/user.model.js";
 import Game from "../../../models/game.model.js";
+import { io } from "../../socket.js";
 import {
   debitGameStake,
   creditGameWin,
   getGameBalance,
 } from "../../../services/casinoWallet.service.js";
+import {
+  createHouseStream,
+  deriveCrashPoint,
+} from "../../../services/provablyFair.service.js";
 
-// One active bet per user for the current crash round. The entry is created
-// when the stake is debited and removed exactly once at settlement (cashout
-// or bust), which is what guarantees a single debit and a single credit.
 const activeBets = new Map();
+const houseStream = createHouseStream("crash");
+
+const GROWTH_K = 18;
+const TICK_MS = 80;
+const WAIT_MS = 5000;
+const CRASHED_MS = 2500;
+const HISTORY_MAX = 20;
+
+const gameState = {
+  phase: "running",
+  round: 1,
+  phaseStartedAt: Date.now(),
+  crashPoint: 1,
+  history: [],
+  lastEmitted: 0,
+};
+
+const currentMultiplier = () => {
+  if (gameState.phase === "waiting") return 1;
+  const elapsedSec = (Date.now() - gameState.phaseStartedAt) / 1000;
+  const live = Math.exp(elapsedSec / GROWTH_K);
+  if (gameState.phase === "crashed") return gameState.crashPoint;
+  return Math.min(gameState.crashPoint, live);
+};
+
+const snapshot = () => ({
+  phase: gameState.phase,
+  round: gameState.round,
+  multiplier: Number(currentMultiplier().toFixed(2)),
+  elapsedMs: Date.now() - gameState.phaseStartedAt,
+  remainingMs:
+    gameState.phase === "waiting"
+      ? Math.max(0, WAIT_MS - (Date.now() - gameState.phaseStartedAt))
+      : gameState.phase === "crashed"
+        ? Math.max(0, CRASHED_MS - (Date.now() - gameState.phaseStartedAt))
+        : 0,
+  crashPoint:
+    gameState.phase === "crashed" ? gameState.crashPoint : null,
+  history: gameState.history,
+  serverNow: Date.now(),
+});
+
+const emitState = () => {
+  io.of("/crash").emit("round_state", snapshot());
+};
+
+const beginRunning = () => {
+  const { floats } = houseStream.next(1);
+  gameState.crashPoint = deriveCrashPoint(floats[0]);
+  gameState.phase = "running";
+  gameState.phaseStartedAt = Date.now();
+  emitState();
+};
+
+const beginCrashed = async () => {
+  gameState.phase = "crashed";
+  gameState.phaseStartedAt = Date.now();
+  gameState.history = [
+    {
+      id: Date.now(),
+      value: gameState.crashPoint,
+      timestamp: new Date().toISOString(),
+    },
+    ...gameState.history,
+  ].slice(0, HISTORY_MAX);
+
+  const pending = [...activeBets.keys()];
+  for (const userId of pending) {
+    const result = await service.bust(userId);
+    io.of("/crash").to(`crash:${userId}`).emit("bet_busted", {
+      newBalance: result.newBalance ?? null,
+      multiplier: gameState.crashPoint,
+    });
+  }
+
+  emitState();
+};
+
+const beginWaiting = () => {
+  gameState.round += 1;
+  gameState.phase = "waiting";
+  gameState.phaseStartedAt = Date.now();
+  emitState();
+};
+
+let loopTimer = null;
+const tick = async () => {
+  if (gameState.phase === "running") {
+    if (currentMultiplier() >= gameState.crashPoint) {
+      await beginCrashed();
+      return;
+    }
+    const now = Date.now();
+    if (now - gameState.lastEmitted >= TICK_MS) {
+      gameState.lastEmitted = now;
+      emitState();
+    }
+    return;
+  }
+
+  if (gameState.phase === "crashed") {
+    if (Date.now() - gameState.phaseStartedAt >= CRASHED_MS) {
+      beginWaiting();
+    }
+    return;
+  }
+
+  if (gameState.phase === "waiting") {
+    if (Date.now() - gameState.phaseStartedAt >= WAIT_MS) {
+      beginRunning();
+    }
+  }
+};
+
+const startGameLoop = () => {
+  if (loopTimer) return;
+  beginRunning();
+  loopTimer = setInterval(() => {
+    tick().catch((err) => console.error("Crash loop error:", err));
+  }, 50);
+};
+
+const cleanup = () => {
+  if (loopTimer) {
+    clearInterval(loopTimer);
+    loopTimer = null;
+  }
+};
 
 const service = {
+  getSnapshot: snapshot,
+  startLoop: startGameLoop,
+
   async join(userId) {
     try {
       const game = await Game.findOne({ name: "crash" });
@@ -36,14 +169,17 @@ const service = {
 
       await user.save();
       await game.save();
-      return { success: true };
+      startGameLoop();
+      return { success: true, gameState: snapshot() };
     } catch (error) {
       return { error: "An error occurred while joining the game" };
     }
   },
 
-  // Debit the stake exactly once when the player commits to the round.
   async placeBet(userId, betAmount, walletType = "demo") {
+    if (gameState.phase !== "waiting") {
+      return { error: "Betting is closed for this round" };
+    }
     if (activeBets.has(userId)) {
       return { error: "You already have a bet in this round" };
     }
@@ -61,16 +197,16 @@ const service = {
     return { success: true, betAmount: debit.stake, newBalance: debit.balance, walletType };
   },
 
-  // Credit the total payout (stake x multiplier) exactly once. Popping the
-  // bet from the map before the credit means a concurrent second cashout
-  // finds no bet and is rejected.
-  async cashOut(userId, multiplier) {
+  async cashOut(userId) {
     const bet = activeBets.get(userId);
     if (!bet) {
       return { error: "No active bet to cash out" };
     }
+    if (gameState.phase !== "running") {
+      return { error: "Cashout is only available while the round is running" };
+    }
 
-    const cashoutMultiplier = Number(multiplier);
+    const cashoutMultiplier = Number(currentMultiplier().toFixed(2));
     if (!Number.isFinite(cashoutMultiplier) || cashoutMultiplier < 1) {
       return { error: "Invalid cashout multiplier" };
     }
@@ -93,8 +229,6 @@ const service = {
     };
   },
 
-  // A bust simply discards the bet: the stake debit stands, nothing is
-  // credited. Safe to call without a bet (spectators / already settled).
   async bust(userId) {
     const bet = activeBets.get(userId);
     if (!bet) {
@@ -106,11 +240,10 @@ const service = {
     return { success: true, hadBet: true, newBalance, walletType: bet.walletType };
   },
 
-  // Drop any unsettled bet when the player disconnects mid-round (treated
-  // as a bust: the stake debit stands).
   clearBet(userId) {
     activeBets.delete(userId);
   },
 };
 
 export default service;
+export { cleanup, startGameLoop };

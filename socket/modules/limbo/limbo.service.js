@@ -5,6 +5,8 @@ import {
   debitGameStake,
   creditGameWin,
 } from "../../../services/casinoWallet.service.js";
+import { consumeGameFloats } from "../../../services/fairnessConsume.service.js";
+import { deriveLimboMultiplier } from "../../../services/provablyFair.service.js";
 
 const service = {
   async join(userId) {
@@ -49,9 +51,12 @@ const service = {
         return { error: debit.error };
       }
 
-      // Generate random number between 1 and 100
-      const randomNumber = (Math.random() * 99 + 1).toFixed(2);
-      const isWin = parseFloat(randomNumber) > targetMultiplier;
+      const fairness = await consumeGameFloats({
+        userId,
+        gameKey: "limbo",
+      });
+      const randomNumber = deriveLimboMultiplier(fairness.floats[0]).toFixed(2);
+      const isWin = parseFloat(randomNumber) >= parseFloat(targetMultiplier);
 
       // Calculate winnings
       const winAmount = isWin ? betAmount * targetMultiplier : 0;
@@ -91,6 +96,9 @@ const service = {
           profit,
           newBalance,
           walletType,
+          nonce: fairness.nonce,
+          clientSeed: fairness.clientSeed,
+          serverSeedHash: fairness.serverSeedHash,
         },
       };
     } catch (error) {

@@ -4,6 +4,8 @@ import {
   debitGameStake,
   creditGameWin,
 } from "../../../services/casinoWallet.service.js";
+import { consumeGameFloats } from "../../../services/fairnessConsume.service.js";
+import { deriveDiceRoll } from "../../../services/provablyFair.service.js";
 
 const service = {
   async join(userId) {
@@ -40,7 +42,8 @@ const service = {
     try {
       if (
         !userId ||
-        !betAmount ||
+        betAmount == null ||
+        Number.isNaN(Number(betAmount)) ||
         !prediction ||
         typeof rollUnder === "undefined"
       ) {
@@ -57,8 +60,11 @@ const service = {
         return { error: debit.error };
       }
 
-      // Generate random roll between 0-100
-      const rawRoll = Math.floor(Math.random() * 101);
+      const fairness = await consumeGameFloats({
+        userId,
+        gameKey: "dice",
+      });
+      const rawRoll = deriveDiceRoll(fairness.floats[0]);
 
       // Calculate win based on rollUnder parameter
       const isWin = rollUnder ? rawRoll < prediction : rawRoll > prediction;
@@ -89,6 +95,9 @@ const service = {
           profit: parseFloat(profit.toFixed(6)),
           newBalance,
           walletType,
+          nonce: fairness.nonce,
+          clientSeed: fairness.clientSeed,
+          serverSeedHash: fairness.serverSeedHash,
         },
       };
     } catch (error) {

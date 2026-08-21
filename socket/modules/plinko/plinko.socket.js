@@ -42,28 +42,48 @@ const setupPlinkoSocket = () => {
       }
     });
 
-    socket.on("result", async (data) => {
+    socket.on("drop", async (data) => {
       try {
-        // walletType rides along inside data (defaults to "demo" in the service).
-        const { walletType } = data || {};
-        const result = await service.result({ ...data, walletType }, userId);
-
+        const result = await service.drop(userId, data);
         if (result.error) {
-          socket.emit("error", { message: result.error });
+          socket.emit("error", {
+            message: result.error,
+            dropId: result.dropId || data?.dropId,
+          });
           return;
         }
 
-        // Emit success with updated balance and result
-        socket.emit("result_success", result.data);
+        socket.emit("drop_accepted", result.data);
+      } catch (err) {
+        socket.emit("error", {
+          message: err.message,
+          dropId: data?.dropId,
+        });
+      }
+    });
 
-        // Broadcast to user's room for potential UI updates
+    socket.on("settle", async (data) => {
+      try {
+        const result = await service.settle(userId, data);
+        if (result.error) {
+          socket.emit("error", {
+            message: result.error,
+            dropId: result.dropId || data?.dropId,
+          });
+          return;
+        }
+
+        socket.emit("result_success", result.data);
         socket.to(`plinko:${userId}`).emit("game_update", {
           type: "result",
           data: result.data,
         });
       } catch (err) {
-        console.error("Result handling error:", err);
-        socket.emit("error", { message: "Failed to process game result" });
+        console.error("Settle handling error:", err);
+        socket.emit("error", {
+          message: "Failed to settle drop",
+          dropId: data?.dropId,
+        });
       }
     });
 

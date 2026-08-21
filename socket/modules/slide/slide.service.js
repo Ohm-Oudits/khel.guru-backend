@@ -6,31 +6,71 @@ import {
   creditGameWin,
   resolveGameWalletType,
 } from "../../../services/casinoWallet.service.js";
+import { createHouseStream, deriveCrashPoint } from "../../../services/provablyFair.service.js";
+
+const WAIT_MS = 5_000;
+const SPIN_MS = 5_000;
+const RESULT_MS = 8_000;
 
 const gameState = {
   isWaiting: true,
-  currentRound: 0,
-  timeLeft: 15,
+  phase: "waiting",
+  currentRound: 1,
+  phaseStartedAt: Date.now(),
   targetMultiplier: null,
   activeBets: new Map(),
   roundResults: [],
 };
 
-const resetGameState = () => {
-  gameState.isWaiting = true;
-  gameState.timeLeft = 15;
-  gameState.targetMultiplier = null;
-  gameState.activeBets.clear();
+const phaseDuration = (phase) => {
+  if (phase === "spinning") return SPIN_MS;
+  if (phase === "result") return RESULT_MS;
+  return WAIT_MS;
 };
 
-const generateMultiplier = () => {
-  return parseFloat((Math.random() * 50 + 1).toFixed(2));
+const remainingMs = () =>
+  Math.max(0, phaseDuration(gameState.phase) - (Date.now() - gameState.phaseStartedAt));
+
+const snapshot = () => {
+  const remain = remainingMs();
+  return {
+    isWaiting: gameState.isWaiting,
+    phase: gameState.phase,
+    timeLeft: Math.ceil(remain / 1000),
+    remainingMs: remain,
+    elapsedMs: Date.now() - gameState.phaseStartedAt,
+    currentRound: gameState.currentRound,
+    roundResults: gameState.roundResults,
+    targetMultiplier: gameState.targetMultiplier,
+    totalBets: gameState.activeBets.size,
+    serverNow: Date.now(),
+    waitMs: WAIT_MS,
+    spinMs: SPIN_MS,
+    resultMs: RESULT_MS,
+  };
+};
+
+const beginPhase = (phase) => {
+  gameState.phase = phase;
+  gameState.phaseStartedAt = Date.now();
+  gameState.isWaiting = phase === "waiting";
+};
+
+const resetToWaiting = () => {
+  gameState.currentRound += 1;
+  gameState.targetMultiplier = null;
+  gameState.activeBets.clear();
+  beginPhase("waiting");
 };
 
 const service = {
   getActiveBetsCount() {
     return gameState.activeBets.size;
   },
+
+  getSnapshot: snapshot,
+
+  startLoop: () => startGameLoop(),
 
   async join(userId) {
     try {
@@ -39,35 +79,30 @@ const service = {
         return { error: "Game not found" };
       }
 
-      const user = await User.findById(userId);
-      if (!user) {
-        return { error: "User not found" };
+      if (userId) {
+        const user = await User.findById(userId);
+        if (!user) {
+          return { error: "User not found" };
+        }
+
+        const gameIndex = user.continuedGames.findIndex(
+          (gameId) => gameId.toString() === game._id.toString()
+        );
+        if (gameIndex !== -1) {
+          user.continuedGames.splice(gameIndex, 1);
+        }
+        user.continuedGames.unshift(game._id);
+        game.gamesPlayed = game.gamesPlayed + 1;
+
+        await user.save();
+        await game.save();
       }
 
-      const gameIndex = user.continuedGames.findIndex(
-        (gameId) => gameId.toString() === game._id.toString()
-      );
-      if (gameIndex !== -1) {
-        user.continuedGames.splice(gameIndex, 1);
-      }
-      user.continuedGames.unshift(game._id);
-      game.gamesPlayed = game.gamesPlayed + 1;
-
-      await user.save();
-      await game.save();
-
-      if (!gameState.gameLoop) {
-        startGameLoop();
-      }
+      startGameLoop();
 
       return {
         success: true,
-        gameState: {
-          isWaiting: gameState.isWaiting,
-          timeLeft: gameState.timeLeft,
-          currentRound: gameState.currentRound,
-          roundResults: gameState.roundResults,
-        },
+        gameState: snapshot(),
       };
     } catch (error) {
       return { error: "An error occurred while joining the game" };
@@ -76,11 +111,16 @@ const service = {
 
   async placeBet(userId, betData) {
     try {
+      if (!userId) {
+        return { error: "Authentication required" };
+      }
+
       const { betAmount, targetMultiplier, walletType } = betData;
 
       if (
-        !betAmount ||
-        betAmount <= 0 ||
+        betAmount == null ||
+        Number.isNaN(Number(betAmount)) ||
+        Number(betAmount) < 0 ||
         !targetMultiplier ||
         targetMultiplier < 1 ||
         targetMultiplier > 51
@@ -106,7 +146,6 @@ const service = {
 
       const resolvedWalletType = resolveGameWalletType(walletType);
 
-      // Debit the stake exactly once, when the bet enters the round.
       const debit = await debitGameStake(userId, {
         gameKey: "slide",
         amount: betAmount,
@@ -134,9 +173,6 @@ const service = {
       const targetMultiplier = generateMultiplier();
       gameState.targetMultiplier = targetMultiplier;
 
-      // Snapshot and clear the round's bets before settling: each bet is
-      // settled exactly once even if this ever ran twice, and the stake was
-      // already debited at place_bet so a loss credits nothing here.
       const settledBets = new Map(gameState.activeBets);
       gameState.activeBets.clear();
 
@@ -145,7 +181,6 @@ const service = {
         const isWin = Math.abs(betTarget - targetMultiplier) < 0.01;
         const winAmount = isWin ? betAmount * targetMultiplier : 0;
 
-        // Total payout (stake x round multiplier) on a win; 0 is a no-op.
         const credit = await creditGameWin(userId, {
           gameKey: "slide",
           amount: winAmount,
@@ -175,12 +210,18 @@ const service = {
         gameState.roundResults.pop();
       }
 
-      gameState.currentRound++;
-      return { success: true, targetMultiplier };
+      return { success: true, targetMultiplier, round: gameState.currentRound };
     } catch (error) {
       return { error: "An error occurred while processing round results" };
     }
   },
+};
+
+const houseStream = createHouseStream("slide");
+
+const generateMultiplier = () => {
+  const { floats } = houseStream.next(1);
+  return Math.min(50, deriveCrashPoint(floats[0]));
 };
 
 let gameLoopInterval;
@@ -188,35 +229,41 @@ const startGameLoop = () => {
   if (gameLoopInterval) return;
 
   gameLoopInterval = setInterval(async () => {
-    if (gameState.isWaiting) {
-      gameState.timeLeft--;
-
-      if (gameState.timeLeft <= 0) {
-        gameState.isWaiting = false;
-
-        const result = await service.processRoundResults();
-        if (result.success) {
-          io.of("/slide").emit("round_result", {
-            round: gameState.currentRound,
-            multiplier: result.targetMultiplier,
-            roundResults: gameState.roundResults,
-          });
+    if (remainingMs() > 0) {
+      if (gameState.phase === "waiting") {
+        const secs = Math.ceil(remainingMs() / 1000);
+        if (secs !== gameState.lastEmittedSecond) {
+          gameState.lastEmittedSecond = secs;
+          io.of("/slide").emit("time_update", snapshot());
         }
+      }
+      return;
+    }
 
-        setTimeout(() => {
-          resetGameState();
-          io.of("/slide").emit("new_round", {
-            round: gameState.currentRound,
-            timeLeft: gameState.timeLeft,
-          });
-        }, 3000);
-      } else {
-        io.of("/slide").emit("time_update", {
-          timeLeft: gameState.timeLeft,
+    if (gameState.phase === "waiting") {
+      beginPhase("spinning");
+      io.of("/slide").emit("round_start", snapshot());
+      return;
+    }
+
+    if (gameState.phase === "spinning") {
+      const result = await service.processRoundResults();
+      beginPhase("result");
+      if (result.success) {
+        io.of("/slide").emit("round_result", {
+          ...snapshot(),
+          multiplier: result.targetMultiplier,
+          round: result.round,
         });
       }
+      return;
     }
-  }, 1000);
+
+    if (gameState.phase === "result") {
+      resetToWaiting();
+      io.of("/slide").emit("new_round", snapshot());
+    }
+  }, 250);
 };
 
 const cleanup = () => {
@@ -224,8 +271,7 @@ const cleanup = () => {
     clearInterval(gameLoopInterval);
     gameLoopInterval = null;
   }
-  resetGameState();
 };
 
 export default service;
-export { cleanup };
+export { cleanup, startGameLoop, WAIT_MS, SPIN_MS, RESULT_MS };

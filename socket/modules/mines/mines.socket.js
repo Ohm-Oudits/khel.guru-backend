@@ -51,15 +51,31 @@ const setupMinesSocket = () => {
 
     socket.on("add_game", async (data) => {
       try {
-        const { betAmount, mines, walletType } = data;
-        if (!betAmount || !mines) {
+        const { betAmount, mines, walletType } = data || {};
+        const mineCount = Number(mines);
+        if (
+          betAmount == null ||
+          Number.isNaN(Number(betAmount)) ||
+          !Number.isInteger(mineCount) ||
+          mineCount < 1 ||
+          mineCount > 24
+        ) {
           throw new Error("Missing required game parameters");
         }
 
-        const result = await service.join(userId, betAmount, mines, walletType);
+        const result = await service.join(
+          userId,
+          betAmount,
+          mineCount,
+          walletType
+        );
         if (result.success) {
+          const game =
+            result.game && typeof result.game.toObject === "function"
+              ? result.game.toObject()
+              : result.game;
           socket.emit("game_state", {
-            ...result.game,
+            ...game,
             hasActiveGame: result.hasActiveGame,
             message: result.message,
             newBalance: result.newBalance,
@@ -68,7 +84,7 @@ const setupMinesSocket = () => {
           socket.emit("error", { message: result.error || "Game error" });
         }
       } catch (err) {
-        socket.emit("error", { message: "Connection error" });
+        socket.emit("error", { message: err.message || "Connection error" });
       }
     });
 

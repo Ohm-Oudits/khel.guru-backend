@@ -1,5 +1,6 @@
 import User from "../../../models/user.model.js";
 import Game from "../../../models/game.model.js";
+import { io } from "../../socket.js";
 import parachuteGame from "./parachute.game.js";
 import {
   debitGameStake,
@@ -7,9 +8,54 @@ import {
   refundGameStake,
   resolveGameWalletType,
 } from "../../../services/casinoWallet.service.js";
+import {
+  createHouseStream,
+  deriveCrashPoint,
+} from "../../../services/provablyFair.service.js";
+
+const houseStream = createHouseStream("parachute");
+const userHistories = new Map();
+const HISTORY_MAX = 50;
+
+const getHistory = (userId) => userHistories.get(userId) || [];
+
+const appendHistory = (userId, value) => {
+  const normalized = Math.floor(Number(value) * 100) / 100;
+  if (!Number.isFinite(normalized)) return null;
+
+  const entry = {
+    id: Date.now(),
+    value: normalized,
+    timestamp: new Date().toISOString(),
+  };
+  const list = getHistory(userId);
+  userHistories.set(userId, [entry, ...list].slice(0, HISTORY_MAX));
+  return entry;
+};
+
+const recordRoundHistory = (userId, crashPoint) => appendHistory(userId, crashPoint);
+
+const emitCrash = (userId, multiplier, notifyClient = null) => {
+  const payload = {
+    multiplier,
+    isCrashed: true,
+    history: getHistory(userId),
+  };
+
+  if (notifyClient) {
+    notifyClient(payload);
+    return;
+  }
+
+  io.of("/parachute")
+    .to(`parachute:${String(userId)}`)
+    .emit("game_crashed", payload);
+};
 
 const service = {
-  async join(userId, betAmount, difficulty, walletType = "demo") {
+  getHistory,
+
+  async join(userId, betAmount, difficulty, walletType = "demo", notifyClient = null) {
     try {
       const game = await Game.findOne({ name: "parachute" });
       if (!game) {
@@ -23,8 +69,6 @@ const service = {
 
       const resolvedWalletType = resolveGameWalletType(walletType);
 
-      // Debit the stake exactly once, when the player commits to the round.
-      // A crash keeps this debit; a checkout credits stake x multiplier.
       const debit = await debitGameStake(userId, {
         gameKey: "parachute",
         amount: betAmount,
@@ -34,7 +78,6 @@ const service = {
         return { error: debit.error };
       }
 
-      // Update user's game history
       const gameIndex = user.continuedGames.findIndex(
         (gameId) => gameId.toString() === game._id.toString()
       );
@@ -45,15 +88,23 @@ const service = {
       user.continuedGames.unshift(game._id);
       game.gamesPlayed = game.gamesPlayed + 1;
 
-      // Start the game
+      const { floats } = houseStream.next(1);
+      const crashPoint = deriveCrashPoint(floats[0]);
+
+      const onCrash = ({ multiplier }) => {
+        recordRoundHistory(userId, multiplier);
+        emitCrash(userId, multiplier, notifyClient);
+      };
+
       const gameResult = parachuteGame.startGame(
         userId,
         betAmount,
         difficulty,
-        resolvedWalletType
+        resolvedWalletType,
+        crashPoint,
+        onCrash
       );
       if (gameResult.error) {
-        // The round never started: hand the stake back.
         await refundGameStake(userId, {
           gameKey: "parachute",
           amount: debit.stake,
@@ -84,16 +135,19 @@ const service = {
       }
 
       const walletType = gameState.walletType || "demo";
+      const crashPoint = Math.floor(Number(gameState.crashPoint) * 100) / 100;
 
-      // parachuteGame.checkout is the exactly-once guard: it rejects a
-      // crashed or already-checked-out round and synchronously removes the
-      // game from activeGames, so a second checkout finds no active game.
       const checkoutResult = parachuteGame.checkout(userId);
       if (checkoutResult.error) {
         return checkoutResult;
       }
 
-      // Credit the total payout (stake x cashout multiplier) exactly once.
+      const resolvedCrashPoint = Number.isFinite(Number(checkoutResult.crashPoint))
+        ? Math.floor(Number(checkoutResult.crashPoint) * 100) / 100
+        : crashPoint;
+
+      recordRoundHistory(userId, resolvedCrashPoint);
+
       const credit = await creditGameWin(userId, {
         gameKey: "parachute",
         amount: checkoutResult.winAmount,
@@ -103,8 +157,10 @@ const service = {
       return {
         success: true,
         ...checkoutResult,
+        crashPoint: resolvedCrashPoint,
         newBalance: credit.balance,
         walletType,
+        history: getHistory(userId),
       };
     } catch (error) {
       console.error("Checkout error:", error);
@@ -112,24 +168,16 @@ const service = {
     }
   },
 
-  async handleCrash(userId) {
+  async forfeit(userId) {
     try {
       const gameState = parachuteGame.getGameState(userId);
-      if (!gameState) {
+      if (!gameState || gameState.hasCheckedOut) {
         return { error: "No active game found" };
       }
 
-      const finalState = parachuteGame.stopGame(userId);
+      const finalState = parachuteGame.forfeitGame(userId);
       if (!finalState) {
         return { error: "Failed to process crash" };
-      }
-
-      // Update user statistics if needed
-      const user = await User.findById(userId);
-      if (user) {
-        // You might want to update user statistics here
-        // For example: total games played, total losses, etc.
-        await user.save();
       }
 
       return {
@@ -137,7 +185,7 @@ const service = {
         ...finalState,
       };
     } catch (error) {
-      console.error("Crash handling error:", error);
+      console.error("Forfeit error:", error);
       return { error: "An error occurred while processing crash" };
     }
   },

@@ -57,11 +57,11 @@ const setupKenoSocket = () => {
         if (
           typeof bet !== "string" ||
           isNaN(parseFloat(bet)) ||
-          parseFloat(bet) < 0.000001
+          parseFloat(bet) < 0
         ) {
           console.log("Invalid bet value:", bet, "Parsed:", parseFloat(bet));
           return socket.emit("error", {
-            message: "Bet amount must be at least 0.000001",
+            message: "Bet amount must be 0 or greater",
           });
         }
 

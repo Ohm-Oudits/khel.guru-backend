@@ -1,5 +1,5 @@
 import { io } from "../../socket.js";
-import service, { cleanup } from "./slide.service.js";
+import service, { cleanup, startGameLoop } from "./slide.service.js";
 import jwt from "jsonwebtoken";
 
 const setupSlideSocket = () => {
@@ -9,8 +9,8 @@ const setupSlideSocket = () => {
     const token = socket.handshake.auth?.token;
 
     if (!token) {
-      console.log("Token not provided");
-      return next(new Error("Authentication required"));
+      socket.data.userId = null;
+      return next();
     }
 
     try {
@@ -30,9 +30,13 @@ const setupSlideSocket = () => {
 
   slideNamespace.on("connection", (socket) => {
     const userId = socket.data.userId;
-    console.log(`User ${userId} joined slide`);
+    console.log(
+      userId ? `User ${userId} joined slide` : "Guest joined slide as spectator"
+    );
 
-    socket.join(`slide:${userId}`);
+    if (userId) {
+      socket.join(`slide:${userId}`);
+    }
 
     socket.on("join_game", async () => {
       try {
@@ -50,6 +54,11 @@ const setupSlideSocket = () => {
 
     socket.on("place_bet", async (betData) => {
       try {
+        if (!userId) {
+          socket.emit("error", { message: "Authentication required" });
+          return;
+        }
+
         const result = await service.placeBet(userId, betData);
         if (result.error) {
           socket.emit("error", { message: result.error });
@@ -74,6 +83,11 @@ const setupSlideSocket = () => {
 
     socket.on("place_auto_bet", async (autoBetData) => {
       try {
+        if (!userId) {
+          socket.emit("error", { message: "Authentication required" });
+          return;
+        }
+
         const { betAmount, targetMultiplier, numberOfBets, walletType } =
           autoBetData;
 
@@ -111,7 +125,11 @@ const setupSlideSocket = () => {
     });
 
     socket.on("disconnect", () => {
-      console.log(`❌ User ${userId} disconnected from Slide`);
+      console.log(
+        userId
+          ? `❌ User ${userId} disconnected from Slide`
+          : "❌ Guest disconnected from Slide"
+      );
       delete socket.data.autoBet;
     });
   });
@@ -150,6 +168,8 @@ const setupSlideSocket = () => {
   process.on("SIGTERM", () => {
     cleanup();
   });
+
+  startGameLoop();
 };
 
 export default setupSlideSocket;

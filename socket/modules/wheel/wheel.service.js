@@ -5,54 +5,22 @@ import {
   debitGameStake,
   creditGameWin,
 } from "../../../services/casinoWallet.service.js";
+import { consumeGameFloats } from "../../../services/fairnessConsume.service.js";
+import { deriveOutcomeIndex } from "../../../services/provablyFair.service.js";
+import { getWheelList } from "./wheel.tables.js";
 
-const generateResult = (risk, segments) => {
-  const random = Math.random();
-
-  if (risk === "Low") {
-    if (random < 0.2) return { multiplier: 0, chance: 0.2 };
-    if (random < 0.9) return { multiplier: 1.2, chance: 0.7 };
-    return { multiplier: 1.5, chance: 0.1 };
+const generateResult = (risk, segments, float) => {
+  const list = getWheelList(risk, segments);
+  if (!list?.length) {
+    return { multiplier: 0, index: 0, chance: 1 };
   }
-
-  if (risk === "Medium") {
-    if (random < 0.5) return { multiplier: 0, chance: 0.5 };
-
-    const remainingRandom = (random - 0.5) * 2;
-
-    if (segments === 30) {
-      if (remainingRandom < 0.4) return { multiplier: 1.5, chance: 0.2 };
-      if (remainingRandom < 0.6) return { multiplier: 1.7, chance: 0.1 };
-      if (remainingRandom < 0.8) return { multiplier: 2.0, chance: 0.1 };
-      if (remainingRandom < 0.9) return { multiplier: 3.0, chance: 0.05 };
-      return { multiplier: 4.0, chance: 0.05 };
-    }
-
-    if (segments === 50) {
-      if (remainingRandom < 0.52) return { multiplier: 1.5, chance: 0.26 };
-      if (remainingRandom < 0.84) return { multiplier: 1.7, chance: 0.16 };
-      if (remainingRandom < 0.96) return { multiplier: 2.0, chance: 0.06 };
-      return { multiplier: 3.0, chance: 0.02 };
-    }
-
-    if (remainingRandom < 0.6) return { multiplier: 1.5, chance: 0.3 };
-    if (remainingRandom < 0.8) return { multiplier: 1.7, chance: 0.1 };
-    return { multiplier: 2.0, chance: 0.1 };
-  }
-
-  if (risk === "High") {
-    const winProbability = 1 / segments;
-    const loseProbability = (segments - 1) / segments;
-
-    if (random < loseProbability) {
-      return { multiplier: 0, chance: loseProbability };
-    }
-
-    const multiplier = segments * 0.99;
-    return { multiplier, chance: winProbability };
-  }
-
-  return { multiplier: 0, chance: 1 };
+  const index = deriveOutcomeIndex(float, list.length);
+  const multiplier = parseFloat(list[index]);
+  return {
+    multiplier: Number.isFinite(multiplier) ? multiplier : 0,
+    index,
+    chance: 1 / list.length,
+  };
 };
 
 const service = {
@@ -100,7 +68,11 @@ const service = {
         return { error: debit.error };
       }
 
-      const result = generateResult(risk, segments);
+      const fairness = await consumeGameFloats({
+        userId,
+        gameKey: "wheel",
+      });
+      const result = generateResult(risk, segments, fairness.floats[0]);
 
       const winAmount = betAmount * result.multiplier;
 
@@ -136,11 +108,15 @@ const service = {
         success: true,
         result: {
           multiplier: result.multiplier,
+          index: result.index,
           winAmount,
           chance: result.chance,
           balance: newBalance,
           newBalance,
           walletType,
+          nonce: fairness.nonce,
+          clientSeed: fairness.clientSeed,
+          serverSeedHash: fairness.serverSeedHash,
         },
       };
     } catch (error) {

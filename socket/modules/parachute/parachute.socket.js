@@ -21,7 +21,7 @@ const setupParachuteSocket = () => {
         return next(new Error("Invalid token"));
       }
 
-      socket.data.userId = decoded.id;
+      socket.data.userId = String(decoded.id);
       next();
     } catch (err) {
       console.error("Token verification failed:", err.message);
@@ -33,43 +33,98 @@ const setupParachuteSocket = () => {
     const userId = socket.data.userId;
     socket.join(`parachute:${userId}`);
 
-    // Start game
+    const sendHistory = () => {
+      socket.emit("round_history", { history: service.getHistory(userId) });
+    };
+
+    sendHistory();
+
+    socket.on("get_history", sendHistory);
+
+    const clearEmitInterval = () => {
+      if (socket.data.emitInterval) {
+        clearInterval(socket.data.emitInterval);
+        socket.data.emitInterval = null;
+      }
+    };
+
+    const deliverCrash = (multiplier, history) => {
+      if (socket.data.roundCrashSent) return;
+      socket.data.roundCrashSent = true;
+      clearEmitInterval();
+      socket.emit("game_crashed", {
+        multiplier,
+        isCrashed: true,
+        history: history || service.getHistory(userId),
+      });
+    };
+
+    const startStateEmitter = () => {
+      clearEmitInterval();
+
+      let roundActive = true;
+      let lastMultiplier = 1;
+
+      socket.data.emitInterval = setInterval(() => {
+        const currentState = parachuteGame.getGameState(userId);
+
+        if (!currentState) {
+          if (roundActive && !socket.data.roundCrashSent) {
+            deliverCrash(lastMultiplier);
+          } else {
+            clearEmitInterval();
+          }
+          return;
+        }
+
+        lastMultiplier = currentState.multiplier;
+
+        socket.emit("game_state", {
+          multiplier: currentState.multiplier,
+          isCrashed: currentState.isCrashed,
+          hasCheckedOut: currentState.hasCheckedOut,
+        });
+
+        if (currentState.isCrashed) {
+          deliverCrash(currentState.multiplier);
+        } else if (currentState.hasCheckedOut) {
+          roundActive = false;
+          clearEmitInterval();
+        }
+      }, 100);
+    };
+
     socket.on("add_game", async (data) => {
       try {
         const { betAmount, difficulty, walletType } = data;
-        if (!betAmount || !difficulty) {
+        if (
+          betAmount == null ||
+          Number.isNaN(Number(betAmount)) ||
+          Number(betAmount) < 0 ||
+          !difficulty
+        ) {
           socket.emit("error", { message: "Missing required parameters" });
           return;
         }
 
-        const result = await service.join(userId, betAmount, difficulty, walletType);
+        socket.data.roundCrashSent = false;
+
+        const result = await service.join(
+          userId,
+          betAmount,
+          difficulty,
+          walletType,
+          (payload) => deliverCrash(payload.multiplier, payload.history)
+        );
         if (result.error) {
           socket.emit("error", { message: result.error });
           return;
         }
 
-        // Start emitting game state updates
-        const gameState = parachuteGame.getGameState(userId);
-        if (gameState) {
-          const emitInterval = setInterval(() => {
-            const currentState = parachuteGame.getGameState(userId);
-            if (!currentState) {
-              clearInterval(emitInterval);
-              return;
-            }
-            socket.emit("game_state", {
-              multiplier: currentState.multiplier,
-              isCrashed: currentState.isCrashed,
-              hasCheckedOut: currentState.hasCheckedOut,
-            });
-          }, 100); // Emit updates every 100ms
-
-          // Store interval ID in socket for cleanup
-          socket.data.emitInterval = emitInterval;
+        if (parachuteGame.getGameState(userId)) {
+          startStateEmitter();
         }
 
-        // Emit a plain snapshot (gameState.intervalId is a Node timer and
-        // must not be serialized).
         socket.emit("game_started", {
           betAmount: result.gameState.betAmount,
           difficulty: result.gameState.difficulty,
@@ -85,28 +140,11 @@ const setupParachuteSocket = () => {
       }
     });
 
-    // Handle crash
-    socket.on("crash", async (data) => {
+    socket.on("checkout", async () => {
       try {
-        const result = await service.handleCrash(userId);
-        if (result.error) {
-          socket.emit("error", { message: result.error });
-          return;
-        }
+        clearEmitInterval();
+        socket.data.roundCrashSent = true;
 
-        socket.emit("game_crashed", {
-          multiplier: result.multiplier,
-          isCrashed: true,
-        });
-      } catch (error) {
-        console.error("Error in crash:", error.message);
-        socket.emit("error", { message: error.message });
-      }
-    });
-
-    // Handle checkout
-    socket.on("checkout", async (data) => {
-      try {
         const result = await service.checkout(userId);
         if (result.error) {
           socket.emit("error", { message: result.error });
@@ -115,26 +153,25 @@ const setupParachuteSocket = () => {
 
         socket.emit("checkout_success", {
           multiplier: result.multiplier,
+          crashPoint: result.crashPoint,
           winAmount: result.winAmount,
           newBalance: result.newBalance,
           hasCheckedOut: true,
+          history: result.history,
         });
+        socket.emit("round_history", { history: result.history });
       } catch (error) {
         console.error("Error in checkout:", error.message);
         socket.emit("error", { message: error.message });
       }
     });
 
-    // Cleanup on disconnect
     socket.on("disconnect", () => {
-      if (socket.data.emitInterval) {
-        clearInterval(socket.data.emitInterval);
-      }
+      clearEmitInterval();
 
-      // Handle any active game
       const gameState = parachuteGame.getGameState(userId);
-      if (gameState && !gameState.hasCheckedOut) {
-        service.handleCrash(userId).catch(console.error);
+      if (gameState && !gameState.hasCheckedOut && !gameState.isCrashed) {
+        service.forfeit(userId).catch(console.error);
       }
 
       console.log(`❌ User ${userId} disconnected from Parachute`);

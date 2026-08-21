@@ -8,8 +8,10 @@ import {
   refundGameStake,
   resolveGameWalletType,
 } from "../../../services/casinoWallet.service.js";
+import { consumeGameFloats } from "../../../services/fairnessConsume.service.js";
+import { shuffleMinesFromFloats } from "../../../services/provablyFair.service.js";
 
-const createGrid = (mines) => {
+const createGrid = (mineIndexes) => {
   const grid = Array(25)
     .fill()
     .map(() => ({
@@ -17,15 +19,12 @@ const createGrid = (mines) => {
       revealed: false,
     }));
 
-  let bombCount = 0;
-  while (bombCount < mines) {
-    const bombIndex = Math.floor(Math.random() * 25);
-    if (grid[bombIndex].type !== "bomb") {
+  for (const bombIndex of mineIndexes) {
+    if (bombIndex >= 0 && bombIndex < 25) {
       grid[bombIndex] = {
         type: "bomb",
         revealed: false,
       };
-      bombCount++;
     }
   }
 
@@ -71,7 +70,13 @@ const service = {
 
       let minesGame;
       try {
-        const grid = createGrid(mines);
+        const fairness = await consumeGameFloats({
+          userId,
+          gameKey: "mines",
+          count: 24,
+        });
+        const mineIndexes = shuffleMinesFromFloats(fairness.floats, mines);
+        const grid = createGrid(mineIndexes);
         minesGame = await Mines.create({
           userId,
           grid,
@@ -213,7 +218,13 @@ const service = {
     try {
       const minesGame = await Mines.findOne({ userId });
       return minesGame
-        ? { success: true, game: minesGame }
+        ? {
+            success: true,
+            game: {
+              ...minesGame.toObject(),
+              hasActiveGame: true,
+            },
+          }
         : { success: false };
     } catch (error) {
       console.error("Get active game error:", error);

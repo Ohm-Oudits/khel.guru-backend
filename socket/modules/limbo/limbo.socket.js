@@ -53,7 +53,11 @@ const setupLimboSocket = () => {
       try {
         const { betAmount, targetMultiplier, walletType } = data;
 
-        if (!betAmount || !targetMultiplier) {
+        if (
+          betAmount == null ||
+          Number.isNaN(Number(betAmount)) ||
+          !targetMultiplier
+        ) {
           socket.emit("error", { message: "Missing bet parameters" });
           return;
         }

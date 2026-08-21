@@ -54,7 +54,12 @@ const setupDiceSocket = () => {
         console.log("roll");
         const { betAmount, prediction, rollUnder, walletType } = data;
 
-        if (!betAmount || !prediction || typeof rollUnder === "undefined") {
+        if (
+          betAmount == null ||
+          Number.isNaN(Number(betAmount)) ||
+          !prediction ||
+          typeof rollUnder === "undefined"
+        ) {
           socket.emit("error", { message: "Missing required parameters" });
           return;
         }

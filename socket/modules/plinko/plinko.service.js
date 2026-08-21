@@ -3,7 +3,52 @@ import Game from "../../../models/game.model.js";
 import {
   debitGameStake,
   creditGameWin,
+  resolveGameWalletType,
 } from "../../../services/casinoWallet.service.js";
+import {
+  createSeedRecordPayload,
+  derivePlinkoPath,
+} from "../../../services/provablyFair.service.js";
+import ProvablyFairSeed from "../../../models/provablyFairSeed.model.js";
+import { BIN_PAYOUTS } from "./plinko.payouts.js";
+
+const takePlinkoOutcome = async (userId, rows) => {
+  let seed = await ProvablyFairSeed.findOne({
+    userId,
+    gameKey: "plinko",
+    status: "active",
+  }).sort({ createdAt: -1 });
+
+  if (!seed) {
+    seed = await ProvablyFairSeed.create({
+      userId,
+      ...createSeedRecordPayload({ gameKey: "plinko" }),
+    });
+  }
+
+  const nonce = seed.nonce;
+  const outcome = derivePlinkoPath({
+    serverSeed: seed.serverSeed,
+    clientSeed: seed.clientSeed,
+    nonce,
+    rows,
+  });
+
+  seed.nonce += 1;
+  seed.lastUsedAt = new Date();
+  await seed.save();
+
+  return {
+    ...outcome,
+    nonce,
+    clientSeed: seed.clientSeed,
+    serverSeedHash: seed.serverSeedHash,
+  };
+};
+
+const pendingDrops = new Map();
+
+const dropKey = (userId, dropId) => `${userId}:${dropId}`;
 
 const service = {
   async join(userId) {
@@ -36,42 +81,111 @@ const service = {
     }
   },
 
-  async result(data, userId) {
+  async drop(userId, data) {
     try {
-      const { bin, payout, betAmount, walletType = "demo" } = data;
+      if (!userId) {
+        return { error: "Authentication required" };
+      }
 
-      // Debit the stake from the wallet first; a losing drop keeps this debit.
+      const joined = await this.join(userId);
+      if (joined.error) {
+        return { error: joined.error, dropId: data?.dropId };
+      }
+
+      const { dropId, betAmount, rows, risk, walletType } = data || {};
+      const table = BIN_PAYOUTS[rows]?.[risk];
+      if (!dropId || !table) {
+        return { error: "Invalid plinko parameters" };
+      }
+
+      const resolvedWalletType = resolveGameWalletType(walletType);
       const debit = await debitGameStake(userId, {
         gameKey: "plinko",
         amount: betAmount,
-        walletType,
+        walletType: resolvedWalletType,
       });
       if (debit.error) {
-        return { error: debit.error };
+        return { error: debit.error, dropId };
       }
 
-      // payout is the total return (stake * bin multiplier); zero is a no-op.
-      const credit = await creditGameWin(userId, {
-        gameKey: "plinko",
-        amount: payout,
-        walletType,
+      const outcome = await takePlinkoOutcome(userId, rows);
+      const multiplier = table[outcome.bin];
+      if (multiplier == null) {
+        return { error: "Invalid plinko result", dropId };
+      }
+
+      pendingDrops.set(dropKey(userId, dropId), {
+        betAmount: debit.stake,
+        multiplier,
+        bin: outcome.bin,
+        path: outcome.path,
+        walletType: resolvedWalletType,
+        payout: debit.stake * multiplier,
+        nonce: outcome.nonce,
+        clientSeed: outcome.clientSeed,
+        serverSeedHash: outcome.serverSeedHash,
       });
-      const newBalance = credit.balance ?? debit.balance;
 
       return {
         success: true,
         data: {
-          balance: newBalance,
-          newBalance,
-          payout,
-          bin,
-          multiplier: payout / betAmount,
-          walletType,
+          dropId,
+          bin: outcome.bin,
+          path: outcome.path,
+          multiplier,
+          betAmount: debit.stake,
+          walletType: resolvedWalletType,
+          nonce: outcome.nonce,
+          clientSeed: outcome.clientSeed,
+          serverSeedHash: outcome.serverSeedHash,
         },
       };
     } catch (error) {
-      console.error("Result processing error:", error);
-      return { error: "An error occurred while processing the result" };
+      console.error("Plinko drop error:", error);
+      return { error: "An error occurred while dropping the ball" };
+    }
+  },
+
+  async settle(userId, data) {
+    try {
+      const dropId = data?.dropId;
+      if (!userId || !dropId) {
+        return { error: "Invalid settle" };
+      }
+
+      const key = dropKey(userId, dropId);
+      const pending = pendingDrops.get(key);
+      if (!pending) {
+        return { error: "Drop not found", dropId };
+      }
+      pendingDrops.delete(key);
+
+      const credit = await creditGameWin(userId, {
+        gameKey: "plinko",
+        amount: pending.payout,
+        walletType: pending.walletType,
+      });
+
+      return {
+        success: true,
+        data: {
+          dropId,
+          bin: pending.bin,
+          path: pending.path,
+          multiplier: pending.multiplier,
+          payout: pending.payout,
+          betAmount: pending.betAmount,
+          nonce: pending.nonce,
+          clientSeed: pending.clientSeed,
+          serverSeedHash: pending.serverSeedHash,
+          balance: credit.balance,
+          newBalance: credit.balance,
+          walletType: pending.walletType,
+        },
+      };
+    } catch (error) {
+      console.error("Plinko settle error:", error);
+      return { error: "An error occurred while settling the drop" };
     }
   },
 };

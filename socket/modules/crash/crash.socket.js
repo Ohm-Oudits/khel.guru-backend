@@ -1,5 +1,5 @@
 import { io } from "../../socket.js";
-import service from "./crash.service.js";
+import service, { startGameLoop } from "./crash.service.js";
 import jwt from "jsonwebtoken";
 
 const setupCrashSocket = () => {
@@ -9,8 +9,8 @@ const setupCrashSocket = () => {
     const token = socket.handshake.auth?.token;
 
     if (!token) {
-      console.log("Token not provided");
-      return next(new Error("Authentication required"));
+      socket.data.userId = null;
+      return next();
     }
 
     try {
@@ -30,11 +30,18 @@ const setupCrashSocket = () => {
 
   crashNamespace.on("connection", (socket) => {
     const userId = socket.data.userId;
-    console.log(`User ${userId} joined crash`);
+    console.log(
+      userId ? `User ${userId} joined crash` : "Guest joined crash as spectator"
+    );
 
-    socket.join(`crash:${userId}`);
+    if (userId) {
+      socket.join(`crash:${userId}`);
+    }
+    startGameLoop();
+    socket.emit("round_state", service.getSnapshot());
 
-    socket.on("add_game", async (data) => {
+    socket.on("add_game", async () => {
+      if (!userId) return;
       try {
         await service.join(userId);
       } catch (err) {
@@ -42,11 +49,23 @@ const setupCrashSocket = () => {
       }
     });
 
+    socket.on("get_state", () => {
+      socket.emit("round_state", service.getSnapshot());
+    });
+
     // Stake commitment: debit once, or reject the bet.
     socket.on("place_bet", async (data) => {
       try {
+        if (!userId) {
+          socket.emit("error", { message: "Login required to bet" });
+          return;
+        }
         const { betAmount, walletType } = data || {};
-        if (!betAmount || Number(betAmount) <= 0) {
+        if (
+          betAmount == null ||
+          Number.isNaN(Number(betAmount)) ||
+          Number(betAmount) < 0
+        ) {
           socket.emit("error", { message: "Invalid bet amount" });
           return;
         }
@@ -69,10 +88,13 @@ const setupCrashSocket = () => {
     });
 
     // Cashout: credit stake x multiplier once for the active bet.
-    socket.on("cash_out", async (data) => {
+    socket.on("cash_out", async () => {
       try {
-        const { multiplier } = data || {};
-        const result = await service.cashOut(userId, multiplier);
+        if (!userId) {
+          socket.emit("error", { message: "Login required to cash out" });
+          return;
+        }
+        const result = await service.cashOut(userId);
         if (result.error) {
           socket.emit("error", { message: result.error });
           return;
@@ -104,11 +126,13 @@ const setupCrashSocket = () => {
     });
 
     socket.on("disconnect", () => {
-      // An unsettled bet is forfeited (bust semantics) on disconnect.
-      service.clearBet(userId);
-      console.log(`❌ User ${userId} disconnected from Wheel`);
+      // Keep the round bet so a reconnect can still cash out, and the
+      // house loop can bust it if the round ends first.
+      console.log(`❌ User ${userId} disconnected from Crash`);
     });
   });
+
+  startGameLoop();
 };
 
 export default setupCrashSocket;
