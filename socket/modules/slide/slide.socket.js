@@ -67,7 +67,6 @@ const setupSlideSocket = () => {
 
         socket.emit("bet_placed", {
           betAmount: betData.betAmount,
-          targetMultiplier: betData.targetMultiplier,
           newBalance: result.newBalance,
           timestamp: Date.now(),
         });
@@ -88,7 +87,7 @@ const setupSlideSocket = () => {
           return;
         }
 
-        const { betAmount, targetMultiplier, numberOfBets, walletType } =
+        const { betAmount, numberOfBets, walletType, targetMultiplier } =
           autoBetData;
 
         if (!numberOfBets || numberOfBets <= 0 || numberOfBets > 100) {
@@ -98,8 +97,8 @@ const setupSlideSocket = () => {
 
         const result = await service.placeBet(userId, {
           betAmount,
-          targetMultiplier,
           walletType,
+          targetMultiplier,
         });
         if (result.error) {
           socket.emit("error", { message: result.error });
@@ -109,15 +108,14 @@ const setupSlideSocket = () => {
         socket.data.autoBet = {
           remainingBets: numberOfBets - 1,
           betAmount,
-          targetMultiplier,
           walletType,
+          targetMultiplier,
         };
 
         socket.emit("auto_bet_started", {
           totalBets: numberOfBets,
           remainingBets: numberOfBets - 1,
           betAmount,
-          targetMultiplier,
         });
       } catch (err) {
         socket.emit("error", { message: err.message });
@@ -141,8 +139,8 @@ const setupSlideSocket = () => {
       if (autoBet && autoBet.remainingBets > 0) {
         const result = await service.placeBet(socket.data.userId, {
           betAmount: autoBet.betAmount,
-          targetMultiplier: autoBet.targetMultiplier,
           walletType: autoBet.walletType,
+          targetMultiplier: autoBet.targetMultiplier,
         });
 
         if (result.success) {
@@ -150,7 +148,6 @@ const setupSlideSocket = () => {
           socket.emit("auto_bet_updated", {
             remainingBets: autoBet.remainingBets,
             betAmount: autoBet.betAmount,
-            targetMultiplier: autoBet.targetMultiplier,
           });
 
           if (autoBet.remainingBets === 0) {

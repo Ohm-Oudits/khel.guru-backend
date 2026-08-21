@@ -167,7 +167,19 @@ export const rotateFairnessSeed = async (req, res, next) => {
 
 export const verifyFairness = async (req, res, next) => {
   try {
-    const { gameKey, serverSeed, clientSeed, nonce, cursor, rows } = req.body;
+    const {
+      gameKey,
+      serverSeed,
+      clientSeed,
+      nonce,
+      cursor,
+      rows,
+      difficulty,
+      mineCount,
+      length,
+      risk,
+      alt,
+    } = req.body;
 
     if (!ensureSupportedGame(gameKey)) {
       return res.status(400).json({ message: "Unsupported fairness game" });
@@ -193,6 +205,11 @@ export const verifyFairness = async (req, res, next) => {
       nonce: parsedNonce,
       cursor: Number.isFinite(parsedCursor) && parsedCursor >= 0 ? parsedCursor : 0,
       rows: Number.parseInt(rows, 10) || 12,
+      difficulty,
+      mineCount: Number.parseInt(mineCount, 10) || 3,
+      length: Number.parseInt(length, 10) || 10,
+      risk,
+      alt: Boolean(alt),
     });
 
     res.json({ verification });

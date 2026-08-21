@@ -48,7 +48,7 @@ const setupScratchSocket = () => {
           `📊 Active game status for user ${userId}:`,
           activeGame ? "Found" : "Not found"
         );
-        socket.emit("active_game", { game: activeGame });
+        socket.emit("active_game", { game: service.toPublicScratchGame(activeGame) });
       } catch (err) {
         console.error(
           `❌ Error getting active game for user ${userId}:`,
@@ -91,7 +91,7 @@ const setupScratchSocket = () => {
           betAmount: game.betAmount,
           isAutoBet: game.isAutoBet,
         });
-        socket.emit("game_started", { game });
+        socket.emit("game_started", { game: service.toPublicScratchGame(game) });
 
         // If auto bet, reveal all boxes immediately
         if (isAutoBet) {
@@ -131,7 +131,7 @@ const setupScratchSocket = () => {
           boxIndex,
           diamondColor: game.grid[boxIndex].diamondColor,
         });
-        socket.emit("box_revealed", { game });
+        socket.emit("box_revealed", { game: service.toPublicScratchGame(game) });
 
         // Check if all boxes are revealed
         const allRevealed = game.grid.every((box) => box.revealed);

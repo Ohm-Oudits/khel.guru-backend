@@ -6,7 +6,10 @@ import {
   getGameBalance,
 } from "../../../services/casinoWallet.service.js";
 import { consumeGameFloats } from "../../../services/fairnessConsume.service.js";
-import { deriveLimboMultiplier } from "../../../services/provablyFair.service.js";
+import {
+  deriveRiskMultiplier,
+  rtpForMultiplierRisk,
+} from "../../../services/provablyFair.service.js";
 import pumpGame from "./pump.game.js";
 import { normalizeRisk } from "./pump.ladders.js";
 
@@ -84,13 +87,22 @@ const service = {
       userId,
       gameKey: "pump",
     });
-    const popAt = deriveLimboMultiplier(fairness.floats[0]);
+    const resolvedRisk = normalizeRisk(risk);
+    const popAt = deriveRiskMultiplier(fairness.floats[0], resolvedRisk);
 
     const started = pumpGame.startRound(userId, {
       betAmount: debit.stake,
       walletType: debit.walletType || walletType,
-      risk: normalizeRisk(risk),
+      risk: resolvedRisk,
       popAt,
+      fairness: {
+        gameKey: "pump",
+        nonce: fairness.nonce,
+        clientSeed: fairness.clientSeed,
+        serverSeedHash: fairness.serverSeedHash,
+        risk: resolvedRisk,
+        rtp: rtpForMultiplierRisk(resolvedRisk),
+      },
     });
 
     if (started.error) {
@@ -102,12 +114,14 @@ const service = {
       betAmount: debit.stake,
       newBalance: debit.balance,
       walletType: debit.walletType || walletType,
-      popAt: Math.floor(Number(popAt) * 100) / 100,
       ...started.gameState,
       fairness: {
+        gameKey: "pump",
         nonce: fairness.nonce,
         clientSeed: fairness.clientSeed,
         serverSeedHash: fairness.serverSeedHash,
+        risk: resolvedRisk,
+        rtp: rtpForMultiplierRisk(resolvedRisk),
       },
     };
   },
@@ -139,6 +153,10 @@ const service = {
       newBalance: credit.balance,
       walletType: result.walletType,
       history: getHistory(userId),
+      fairness: {
+        ...(result.fairness || {}),
+        popAt: result.popAt,
+      },
     };
   },
 
@@ -147,6 +165,7 @@ const service = {
     const forfeit = pumpGame.forfeit(userId);
 
     const popAt = forfeit?.popAt ?? round?.popAt;
+    const fairness = forfeit?.fairness ?? round?.fairness ?? null;
     const multiplier =
       poppedMultiplier ?? forfeit?.multiplier ?? round?.currentMultiplier;
     const walletType = forfeit?.walletType ?? round?.walletType ?? "demo";
@@ -172,6 +191,10 @@ const service = {
       newBalance,
       walletType,
       history: getHistory(userId),
+      fairness: {
+        ...(fairness || {}),
+        popAt: resolvedPopAt,
+      },
     };
   },
 

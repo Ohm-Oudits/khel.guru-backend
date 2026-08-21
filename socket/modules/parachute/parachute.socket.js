@@ -48,7 +48,7 @@ const setupParachuteSocket = () => {
       }
     };
 
-    const deliverCrash = (multiplier, history) => {
+    const deliverCrash = (multiplier, history, fairness = null) => {
       if (socket.data.roundCrashSent) return;
       socket.data.roundCrashSent = true;
       clearEmitInterval();
@@ -56,6 +56,8 @@ const setupParachuteSocket = () => {
         multiplier,
         isCrashed: true,
         history: history || service.getHistory(userId),
+        fairness,
+        crashPoint: multiplier,
       });
     };
 
@@ -64,13 +66,14 @@ const setupParachuteSocket = () => {
 
       let roundActive = true;
       let lastMultiplier = 1;
+      let lastFairness = null;
 
       socket.data.emitInterval = setInterval(() => {
         const currentState = parachuteGame.getGameState(userId);
 
         if (!currentState) {
           if (roundActive && !socket.data.roundCrashSent) {
-            deliverCrash(lastMultiplier);
+            deliverCrash(lastMultiplier, null, lastFairness);
           } else {
             clearEmitInterval();
           }
@@ -78,6 +81,7 @@ const setupParachuteSocket = () => {
         }
 
         lastMultiplier = currentState.multiplier;
+        lastFairness = currentState.fairness || lastFairness;
 
         socket.emit("game_state", {
           multiplier: currentState.multiplier,
@@ -86,7 +90,11 @@ const setupParachuteSocket = () => {
         });
 
         if (currentState.isCrashed) {
-          deliverCrash(currentState.multiplier);
+          deliverCrash(
+            currentState.multiplier,
+            null,
+            currentState.fairness
+          );
         } else if (currentState.hasCheckedOut) {
           roundActive = false;
           clearEmitInterval();
@@ -114,7 +122,12 @@ const setupParachuteSocket = () => {
           betAmount,
           difficulty,
           walletType,
-          (payload) => deliverCrash(payload.multiplier, payload.history)
+          (payload) =>
+            deliverCrash(
+              payload.multiplier,
+              payload.history,
+              payload.fairness
+            )
         );
         if (result.error) {
           socket.emit("error", { message: result.error });
@@ -133,6 +146,7 @@ const setupParachuteSocket = () => {
           hasCheckedOut: result.gameState.hasCheckedOut,
           walletType: result.gameState.walletType,
           newBalance: result.newBalance,
+          fairness: result.gameState.fairness,
         });
       } catch (err) {
         console.error("Error in add_game:", err.message);
@@ -158,6 +172,7 @@ const setupParachuteSocket = () => {
           newBalance: result.newBalance,
           hasCheckedOut: true,
           history: result.history,
+          fairness: result.fairness,
         });
         socket.emit("round_history", { history: result.history });
       } catch (error) {

@@ -8,12 +8,12 @@ import {
   refundGameStake,
   resolveGameWalletType,
 } from "../../../services/casinoWallet.service.js";
+import { consumeGameFloats } from "../../../services/fairnessConsume.service.js";
 import {
-  createHouseStream,
-  deriveCrashPoint,
+  deriveRiskMultiplier,
+  rtpForMultiplierRisk,
 } from "../../../services/provablyFair.service.js";
 
-const houseStream = createHouseStream("parachute");
 const userHistories = new Map();
 const HISTORY_MAX = 50;
 
@@ -35,11 +35,13 @@ const appendHistory = (userId, value) => {
 
 const recordRoundHistory = (userId, crashPoint) => appendHistory(userId, crashPoint);
 
-const emitCrash = (userId, multiplier, notifyClient = null) => {
+const emitCrash = (userId, multiplier, notifyClient = null, fairness = null) => {
   const payload = {
     multiplier,
     isCrashed: true,
     history: getHistory(userId),
+    fairness,
+    crashPoint: multiplier,
   };
 
   if (notifyClient) {
@@ -88,12 +90,25 @@ const service = {
       user.continuedGames.unshift(game._id);
       game.gamesPlayed = game.gamesPlayed + 1;
 
-      const { floats } = houseStream.next(1);
-      const crashPoint = deriveCrashPoint(floats[0]);
+      const fairness = await consumeGameFloats({
+        userId,
+        gameKey: "parachute",
+      });
+      const crashPoint = deriveRiskMultiplier(
+        fairness.floats[0],
+        difficulty
+      );
+      const fairnessPublic = {
+        nonce: fairness.nonce,
+        clientSeed: fairness.clientSeed,
+        serverSeedHash: fairness.serverSeedHash,
+        difficulty,
+        rtp: rtpForMultiplierRisk(difficulty),
+      };
 
       const onCrash = ({ multiplier }) => {
         recordRoundHistory(userId, multiplier);
-        emitCrash(userId, multiplier, notifyClient);
+        emitCrash(userId, multiplier, notifyClient, fairnessPublic);
       };
 
       const gameResult = parachuteGame.startGame(
@@ -102,7 +117,8 @@ const service = {
         difficulty,
         resolvedWalletType,
         crashPoint,
-        onCrash
+        onCrash,
+        fairnessPublic
       );
       if (gameResult.error) {
         await refundGameStake(userId, {
@@ -161,6 +177,7 @@ const service = {
         newBalance: credit.balance,
         walletType,
         history: getHistory(userId),
+        fairness: checkoutResult.fairness || gameState.fairness,
       };
     } catch (error) {
       console.error("Checkout error:", error);

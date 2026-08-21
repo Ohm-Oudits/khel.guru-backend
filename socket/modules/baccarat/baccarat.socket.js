@@ -37,6 +37,7 @@ const setupBaccaratSocket = () => {
     let currentGameId = null;
 
     socket.on("join_game", async () => {
+      console.log(`Baccarat join_game from ${userId}`);
       try {
         const result = await service.join(userId);
         if (result.success) {

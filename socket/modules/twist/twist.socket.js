@@ -30,10 +30,9 @@ const setupTwistSocket = () => {
 
   twistNamespace.on("connection", (socket) => {
     const userId = socket.data.userId;
-    console.log(`User ${userId} joined twist`);
     socket.join(`twist:${userId}`);
 
-    socket.on("add_game", async (data) => {
+    socket.on("add_game", async () => {
       try {
         await service.join(userId);
       } catch (err) {
@@ -41,7 +40,15 @@ const setupTwistSocket = () => {
       }
     });
 
-    // Debit the spin's stake from the wallet.
+    socket.on("get_state", async () => {
+      try {
+        const state = await service.getState(userId);
+        socket.emit("twist_state", state);
+      } catch (err) {
+        socket.emit("error", { message: err.message });
+      }
+    });
+
     socket.on("place_bet", async (data) => {
       try {
         const { betAmount, walletType } = data || {};
@@ -49,7 +56,7 @@ const setupTwistSocket = () => {
         if (
           betAmount == null ||
           Number.isNaN(Number(betAmount)) ||
-          Number(betAmount) < 0
+          Number(betAmount) <= 0
         ) {
           socket.emit("error", { message: "Missing bet amount" });
           return;
@@ -67,8 +74,34 @@ const setupTwistSocket = () => {
       }
     });
 
+    socket.on("cashout", async () => {
+      try {
+        const result = await service.cashout(userId);
+        if (result.error) {
+          socket.emit("error", { message: result.error });
+          return;
+        }
+        socket.emit("cashout_result", result.result);
+      } catch (err) {
+        socket.emit("error", { message: err.message });
+      }
+    });
+
+    socket.on("partial_cashout", async () => {
+      try {
+        const result = await service.partialCashout(userId);
+        if (result.error) {
+          socket.emit("error", { message: result.error });
+          return;
+        }
+        socket.emit("partial_cashout_result", result.result);
+      } catch (err) {
+        socket.emit("error", { message: err.message });
+      }
+    });
+
     socket.on("disconnect", () => {
-      console.log(`❌ User ${userId} disconnected from Twist`);
+      console.log(`User ${userId} disconnected from Twist`);
     });
   });
 };

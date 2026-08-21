@@ -9,7 +9,13 @@ import {
   resolveGameWalletType,
 } from "../../../services/casinoWallet.service.js";
 import { consumeGameFloats } from "../../../services/fairnessConsume.service.js";
-import { shuffleMinesFromFloats } from "../../../services/provablyFair.service.js";
+import {
+  MINES_EVENT_COUNT,
+  revealedGemsFromRound,
+  serializeMinesState,
+  settleMinesCashout,
+  shuffleMinesFromFloats,
+} from "./mines.fairness.js";
 
 const createGrid = (mineIndexes) => {
   const grid = Array(25)
@@ -31,6 +37,13 @@ const createGrid = (mineIndexes) => {
   return grid;
 };
 
+const settleFromGrid = (minesGame) =>
+  settleMinesCashout({
+    betAmount: minesGame.betAmount,
+    mineCount: minesGame.mines,
+    gemsRevealed: revealedGemsFromRound(minesGame),
+  });
+
 const service = {
   async join(userId, betAmount, mines, walletType = "demo") {
     try {
@@ -44,21 +57,18 @@ const service = {
         return { error: "User not found" };
       }
 
-      // Check if user has an existing game
       const existingGame = await Mines.findOne({ userId });
       if (existingGame) {
         return {
           success: true,
           hasActiveGame: true,
-          game: existingGame,
+          game: serializeMinesState(existingGame),
           message: "Existing game found",
         };
       }
 
       const resolvedWalletType = resolveGameWalletType(walletType);
 
-      // Debit the stake exactly once, when the round starts. A losing round
-      // (bomb) keeps this debit; a cashout credits stake + profit back.
       const debit = await debitGameStake(userId, {
         gameKey: "mines",
         amount: betAmount,
@@ -73,7 +83,7 @@ const service = {
         const fairness = await consumeGameFloats({
           userId,
           gameKey: "mines",
-          count: 24,
+          count: MINES_EVENT_COUNT,
         });
         const mineIndexes = shuffleMinesFromFloats(fairness.floats, mines);
         const grid = createGrid(mineIndexes);
@@ -88,10 +98,11 @@ const service = {
           walletType: resolvedWalletType,
           profit: "0.000000",
           loss: "0.000000",
+          nonce: fairness.nonce,
+          clientSeed: fairness.clientSeed,
+          serverSeedHash: fairness.serverSeedHash,
         });
       } catch (createError) {
-        // The round never started (e.g. duplicate-game race): hand the
-        // stake back so the debit does not leak.
         await refundGameStake(userId, {
           gameKey: "mines",
           amount: debit.stake,
@@ -115,7 +126,7 @@ const service = {
       return {
         success: true,
         hasActiveGame: false,
-        game: minesGame,
+        game: serializeMinesState(minesGame),
         message: "New game created",
         newBalance: debit.balance,
       };
@@ -132,11 +143,10 @@ const service = {
         return { error: "No game found" };
       }
 
-      // Return the complete game state
       return {
         success: true,
         game: {
-          ...existingGame.toObject(),
+          ...serializeMinesState(existingGame),
           hasActiveGame: true,
           message: "Continuing existing game",
         },
@@ -159,14 +169,15 @@ const service = {
       }
 
       minesGame.grid[index].revealed = true;
+      minesGame.markModified("grid");
 
-      if (minesGame.grid[index].type === "bomb") {
+      if (minesGame.grid[index].type === "bomb" || minesGame.grid[index].get?.("type") === "bomb") {
         minesGame.gameOver = true;
         minesGame.loss = minesGame.betAmount;
         await minesGame.deleteOne();
         return {
           success: true,
-          game: minesGame,
+          game: serializeMinesState(minesGame),
           result: "bomb",
         };
       }
@@ -180,31 +191,39 @@ const service = {
       let newBalance;
       if (unrevealedDiamonds === 0) {
         minesGame.gameWon = true;
-        const multiplier = (25 - minesGame.mines) / minesGame.mines;
-        minesGame.profit = (
-          parseFloat(minesGame.betAmount) * multiplier
-        ).toFixed(6);
-        // Deleting the round doc is the settlement guard: only the caller
-        // that actually removed it credits the payout, so a full-board win
-        // can never be paid twice (nor again via a later "checkout" emit).
+        const settlement = settleFromGrid(minesGame);
+        minesGame.profit = settlement.profit.toFixed(6);
         const deletion = await minesGame.deleteOne();
         if (deletion?.deletedCount === 1) {
-          const payout =
-            parseFloat(minesGame.betAmount) + parseFloat(minesGame.profit);
           const credit = await creditGameWin(userId, {
             gameKey: "mines",
-            amount: payout,
+            amount: settlement.payout,
             walletType: minesGame.walletType || "demo",
           });
           newBalance = credit.balance;
         }
-      } else {
-        await minesGame.save();
+        return {
+          success: true,
+          game: {
+            ...serializeMinesState(minesGame),
+            multiplier: settlement.multiplier,
+            profit: settlement.profit.toFixed(6),
+          },
+          result: "diamond",
+          newBalance,
+        };
       }
+
+      await minesGame.save();
+      const live = settleFromGrid(minesGame);
 
       return {
         success: true,
-        game: minesGame,
+        game: {
+          ...serializeMinesState(minesGame),
+          multiplier: live.multiplier,
+          profit: live.profit.toFixed(6),
+        },
         result: "diamond",
         newBalance,
       };
@@ -221,7 +240,7 @@ const service = {
         ? {
             success: true,
             game: {
-              ...minesGame.toObject(),
+              ...serializeMinesState(minesGame),
               hasActiveGame: true,
             },
           }
@@ -234,39 +253,26 @@ const service = {
 
   async checkout(userId) {
     try {
-      // Atomically pop the round: findOneAndDelete makes sure exactly one
-      // concurrent checkout wins the doc, so the payout is credited once.
-      // (A busted round was already deleted in reveal(), so a stray
-      // checkout after a bomb finds nothing and credits nothing.)
       const minesGame = await Mines.findOneAndDelete({ userId });
       if (!minesGame) {
         return { error: "No game found" };
       }
 
-      // Calculate profit based on revealed diamonds
-      const revealedDiamonds = minesGame.grid.filter(
-        (tile) => tile.type === "diamond" && tile.revealed
-      ).length;
-
-      const multiplier = (25 - minesGame.mines) / minesGame.mines;
-      const profit = (
-        parseFloat(minesGame.betAmount) *
-        multiplier *
-        (revealedDiamonds / (25 - minesGame.mines))
-      ).toFixed(6);
-
-      // Credit the total payout (stake + profit) exactly once.
-      const payout = parseFloat(minesGame.betAmount) + parseFloat(profit);
+      const settlement = settleFromGrid(minesGame);
       const credit = await creditGameWin(userId, {
         gameKey: "mines",
-        amount: payout,
+        amount: settlement.payout,
         walletType: minesGame.walletType || "demo",
       });
 
       return {
         success: true,
-        profit,
-        revealedDiamonds,
+        profit: settlement.profit.toFixed(6),
+        multiplier: settlement.multiplier,
+        payout: settlement.payout,
+        revealedDiamonds: settlement.gemsRevealed,
+        betAmount: minesGame.betAmount,
+        fairness: serializeMinesState(minesGame).fairness,
         newBalance: credit.balance,
       };
     } catch (error) {

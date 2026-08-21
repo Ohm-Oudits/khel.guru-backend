@@ -5,7 +5,10 @@ import {
   creditGameWin,
 } from "../../../services/casinoWallet.service.js";
 import { consumeGameFloats } from "../../../services/fairnessConsume.service.js";
-import { deriveRoulettePocket } from "../../../services/provablyFair.service.js";
+import {
+  deriveRoulettePocket,
+  ROULETTE_FAIRNESS_FORMULA,
+} from "../../../services/provablyFair.service.js";
 import { wheelIndexFromPocket } from "./roulette.constants.js";
 
 export const ROULETTE_RED_NUMBERS = [
@@ -164,7 +167,7 @@ const service = {
           clientSeed: fairness.clientSeed,
           serverSeedHash: fairness.serverSeedHash,
           cursor: 0,
-          formula: "floor(float × 37)",
+          formula: ROULETTE_FAIRNESS_FORMULA,
         },
         nonce: fairness.nonce,
         clientSeed: fairness.clientSeed,

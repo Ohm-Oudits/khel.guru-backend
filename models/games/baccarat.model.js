@@ -92,7 +92,7 @@ const baccaratSchema = new mongoose.Schema({
       },
       status: {
         type: String,
-        enum: ["pending", "won", "lost"],
+        enum: ["pending", "won", "lost", "push"],
         default: "pending",
       },
       payout: {
@@ -153,58 +153,6 @@ baccaratSchema.methods.determineWinner = function () {
     this.winner = "banker";
   } else {
     this.winner = "tie";
-  }
-};
-
-// Process payouts
-baccaratSchema.methods.processPayouts = function () {
-  const payouts = {
-    player: 2, // 2x for player win
-    banker: 1.95, // 1.95x for banker win (5% commission)
-    tie: 8, // 8x for tie
-  };
-
-  for (const bet of this.bets) {
-    if (bet.type === this.winner) {
-      bet.status = "won";
-      bet.payout = bet.amount * payouts[bet.type];
-    } else {
-      bet.status = "lost";
-      bet.payout = 0;
-    }
-  }
-};
-
-// Create new deck
-baccaratSchema.methods.createNewDeck = function () {
-  const suits = ["♦", "♥", "♠", "♣"];
-  const values = [
-    "2",
-    "3",
-    "4",
-    "5",
-    "6",
-    "7",
-    "8",
-    "9",
-    "10",
-    "J",
-    "Q",
-    "K",
-    "A",
-  ];
-  this.deck = [];
-
-  for (const suit of suits) {
-    for (const value of values) {
-      this.deck.push({ suit, value });
-    }
-  }
-
-  // Shuffle deck
-  for (let i = this.deck.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [this.deck[i], this.deck[j]] = [this.deck[j], this.deck[i]];
   }
 };
 

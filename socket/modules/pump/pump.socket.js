@@ -113,6 +113,7 @@ const setupPumpSocket = () => {
             popAt: bust.popAt ?? result.popAt,
             newBalance: bust.newBalance,
             history,
+            fairness: bust.fairness,
           });
           socket.emit("round_history", { history });
           return;
@@ -147,6 +148,7 @@ const setupPumpSocket = () => {
           newBalance: result.newBalance,
           walletType: result.walletType,
           history: result.history,
+          fairness: result.fairness,
         });
         socket.emit("round_history", { history: result.history });
       } catch (err) {
@@ -169,6 +171,7 @@ const setupPumpSocket = () => {
           popAt: result.popAt ?? null,
           multiplier: result.multiplier ?? null,
           history,
+          fairness: result.fairness,
         });
         if (history?.length) {
           socket.emit("round_history", { history });

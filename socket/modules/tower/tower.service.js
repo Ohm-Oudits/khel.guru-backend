@@ -1,5 +1,4 @@
 import User from "../../../models/user.model.js";
-import Game from "../../../models/game.model.js";
 import Tower from "../../../models/games/tower.model.js";
 import {
   debitGameStake,
@@ -8,6 +7,23 @@ import {
   getGameBalance,
   resolveGameWalletType,
 } from "../../../services/casinoWallet.service.js";
+import { consumeGameFloats } from "../../../services/fairnessConsume.service.js";
+import {
+  buildTowerGrid,
+  buildTowerFairnessPayload,
+  floatsNeededForTower,
+  getRowColFromIndex,
+  getTowerDifficulty,
+  normalizeTowerDifficulty,
+  revealAllBoxes,
+  serializeTowerState,
+  TOWER_ROWS,
+} from "./tower.game.js";
+import {
+  computeTowerCheckoutProfit,
+  computeTowerWinProfit,
+  getTowerProgress,
+} from "./tower.payout.js";
 
 const service = {
   async getGameState(userId) {
@@ -25,7 +41,13 @@ const service = {
           checkedOut: false,
         };
       }
-      return tower;
+
+      const revealAll =
+        tower.gameOver || tower.gameWon || tower.checkedOut;
+      return {
+        ...serializeTowerState(tower, { revealAll }),
+        hasActiveGame: !tower.gameOver && !tower.gameWon && !tower.checkedOut,
+      };
     } catch (error) {
       throw new Error("Failed to get game state");
     }
@@ -38,8 +60,6 @@ const service = {
         throw new Error("User not found");
       }
 
-      // Check for existing game — resuming an in-flight round must NOT
-      // debit again (its stake was taken when it was created).
       const existingGame = await Tower.findOne({ userId });
       if (
         existingGame &&
@@ -51,13 +71,11 @@ const service = {
           hasActiveGame: true,
           existingGame: true,
           message: "You have an active game. Please continue or checkout.",
-          currentGame: existingGame,
+          currentGame: serializeTowerState(existingGame),
         };
       }
 
       const resolvedWalletType = resolveGameWalletType(walletType);
-
-      // Debit the stake exactly once, when the new round is created.
       const debit = await debitGameStake(userId, {
         gameKey: "tower",
         amount: betAmount,
@@ -67,10 +85,14 @@ const service = {
         throw new Error(debit.error);
       }
 
-      // Generate grid based on difficulty
-      const grid = this.generateGrid(difficulty);
+      const fairness = await consumeGameFloats({
+        userId,
+        gameKey: "tower",
+        count: floatsNeededForTower(difficulty),
+      });
+      const { grid, cols } = buildTowerGrid(fairness.floats, difficulty);
+      const normalizedDifficulty = normalizeTowerDifficulty(difficulty);
 
-      // Create or update tower game
       let tower;
       try {
         tower = await Tower.findOneAndUpdate(
@@ -78,22 +100,26 @@ const service = {
           {
             userId,
             grid,
-            betAmount,
+            cols,
+            betAmount: debit.stake ?? betAmount,
             gameOver: false,
             gameWon: false,
             profit: 0,
             loss: 0,
             checkedOut: false,
-            currentRow: grid.length - 1, // Start from bottom row
-            difficulty,
-            selectedBoxes: [], // Add selectedBoxes array to track revealed boxes
+            currentRow: TOWER_ROWS - 1,
+            difficulty: normalizedDifficulty,
+            selectedBoxes: [],
+            stepsCompleted: 0,
             walletType: resolvedWalletType,
             settled: false,
+            nonce: fairness.nonce,
+            clientSeed: fairness.clientSeed,
+            serverSeedHash: fairness.serverSeedHash,
           },
           { upsert: true, new: true }
         );
       } catch (createError) {
-        // The round never came into existence: give the stake back.
         await refundGameStake(userId, {
           gameKey: "tower",
           amount: betAmount,
@@ -103,13 +129,12 @@ const service = {
       }
 
       return {
-        ...tower.toObject(),
+        ...serializeTowerState(tower),
         hasActiveGame: true,
         existingGame: false,
-        currentRow: tower.currentRow,
-        grid: tower.grid,
         newBalance: debit.balance,
         walletType: resolvedWalletType,
+        fairness: buildTowerFairnessPayload(tower),
       };
     } catch (error) {
       throw new Error(error.message || "Failed to start game");
@@ -127,17 +152,16 @@ const service = {
         throw new Error("Game is already over");
       }
 
-      const { row, col } = this.getRowColFromIndex(index);
+      const cols = tower.cols || getTowerDifficulty(tower.difficulty).cols;
+      const { row, col } = getRowColFromIndex(index, cols);
       if (row !== tower.currentRow) {
         throw new Error("Invalid row selection");
       }
 
-      // Initialize selectedBoxes if it doesn't exist
       if (!tower.selectedBoxes) {
         tower.selectedBoxes = [];
       }
 
-      // Check if box is already revealed
       const isAlreadyRevealed = tower.selectedBoxes.some(
         (box) => box.row === row && box.col === col
       );
@@ -145,38 +169,33 @@ const service = {
         throw new Error("Box already revealed");
       }
 
-      // Update grid and track revealed box
-      const grid = [...tower.grid];
+      const grid = tower.grid.map((gridRow) =>
+        gridRow.map((cell) => ({ ...cell }))
+      );
       grid[row][col].revealed = true;
       const isCorrect = tower.grid[row][col].isCorrect;
 
-      // Add to selected boxes
       tower.selectedBoxes.push({ row, col, isCorrect });
+      tower.stepsCompleted = (tower.stepsCompleted || 0) + 1;
 
-      // Check if game is over
       if (!isCorrect) {
         tower.gameOver = true;
         tower.loss = tower.betAmount;
-        // Reveal all boxes when game is over
-        this.revealAllBoxes(grid);
+        revealAllBoxes(grid);
       } else if (row === 0) {
-        // Calculate profit based on difficulty and rows completed
-        const multiplier = this.getMultiplier(tower.difficulty);
         tower.gameWon = true;
-        tower.profit = tower.betAmount * multiplier;
-        // Reveal all boxes when game is won
-        this.revealAllBoxes(grid);
+        tower.profit = computeTowerWinProfit({
+          difficulty: tower.difficulty,
+          betAmount: tower.betAmount,
+        });
+        revealAllBoxes(grid);
       } else {
-        tower.currentRow--;
+        tower.currentRow -= 1;
       }
 
       tower.grid = grid;
       await tower.save();
 
-      // Reaching the top settles the round: credit the total payout exactly
-      // once by claiming the round's `settled` flag atomically. Checkout on
-      // an already-won game skips crediting (see checkout below), so a win
-      // can never pay twice.
       let newBalance = null;
       if (tower.gameWon) {
         const claim = await Tower.findOneAndUpdate(
@@ -193,6 +212,7 @@ const service = {
         }
       }
 
+      const revealAll = tower.gameOver || tower.gameWon;
       return {
         isCorrect,
         gameOver: tower.gameOver,
@@ -200,12 +220,19 @@ const service = {
         currentRow: tower.currentRow,
         profit: tower.profit,
         loss: tower.loss,
-        grid: tower.grid,
+        grid: serializeTowerState(tower, { revealAll }).grid,
         row,
         col,
-        selectedBoxes: tower.selectedBoxes,
+        selectedBoxes: tower.selectedBoxes.map(({ row: r, col: c, isCorrect: ok }) => ({
+          row: r,
+          col: c,
+          correct: ok,
+          isCorrect: ok,
+        })),
+        step: tower.stepsCompleted,
         newBalance,
         walletType: tower.walletType || "demo",
+        fairness: buildTowerFairnessPayload(tower),
       };
     } catch (error) {
       throw new Error(error.message || "Failed to reveal box");
@@ -223,21 +250,24 @@ const service = {
       let newBalance = null;
 
       if (!tower.gameOver && !tower.gameWon) {
-        // Calculate profit based on current progress
-        const multiplier = this.getMultiplier(tower.difficulty);
-        const progress = tower.grid.length - tower.currentRow - 1;
-        const calculatedProfit =
-          tower.betAmount * (multiplier * (progress / tower.grid.length));
+        const progress = getTowerProgress({
+          currentRow: tower.currentRow,
+          rows: tower.grid.length,
+        });
 
-        // Ensure profit is a valid number
-        tower.profit = isNaN(calculatedProfit) ? 0 : calculatedProfit;
+        if (progress <= 0) {
+          throw new Error("Checkout requires at least one cleared row");
+        }
+
+        tower.profit = computeTowerCheckoutProfit({
+          difficulty: tower.difficulty,
+          betAmount: tower.betAmount,
+          currentRow: tower.currentRow,
+          rows: tower.grid.length,
+        });
         tower.checkedOut = true;
+        revealAllBoxes(tower.grid);
 
-        // Reveal all boxes when checking out
-        this.revealAllBoxes(tower.grid);
-
-        // Settle the cashout exactly once: claim the round's `settled` flag
-        // atomically before crediting, so racing checkouts can't pay twice.
         const claim = await Tower.findOneAndUpdate(
           { _id: tower._id, settled: { $ne: true } },
           { $set: { settled: true } }
@@ -251,141 +281,29 @@ const service = {
           newBalance = credit.balance;
         }
       } else {
-        // A won round was already credited at the winning reveal; a lost
-        // round keeps its debit. Nothing to move — just report the balance.
         newBalance = await getGameBalance(userId, walletType);
       }
 
-      // Ensure all required fields are present
-      const checkoutData = {
-        userId: tower.userId,
-        grid: tower.grid,
+      const checkoutData = serializeTowerState(tower, { revealAll: true });
+      checkoutData.checkedOut = true;
+      checkoutData.fairnessSnapshot = buildTowerFairnessPayload(tower, {
         betAmount: tower.betAmount,
-        gameOver: tower.gameOver,
-        gameWon: tower.gameWon,
-        profit: tower.profit,
-        loss: tower.loss,
-        checkedOut: true,
-        currentRow: tower.currentRow,
-        difficulty: tower.difficulty,
-        selectedBoxes: tower.selectedBoxes || [],
-      };
+      });
 
-      // Save the final state before deleting
       await Tower.findOneAndUpdate({ userId }, checkoutData, { new: true });
-
-      // Delete the tower entry
       await Tower.deleteOne({ userId });
 
       return {
         ...checkoutData,
-        checkedOut: true,
-        grid: tower.grid,
         profit: tower.profit,
         loss: tower.loss,
         newBalance,
         walletType,
+        fairness: buildTowerFairnessPayload(tower, { betAmount: tower.betAmount }),
       };
     } catch (error) {
       throw new Error(error.message || "Failed to checkout");
     }
-  },
-
-  // Helper function to reveal all boxes
-  revealAllBoxes(grid) {
-    for (let row = 0; row < grid.length; row++) {
-      for (let col = 0; col < grid[row].length; col++) {
-        grid[row][col].revealed = true;
-      }
-    }
-  },
-
-  // Helper functions
-  generateGrid(difficulty) {
-    const rows = 9;
-    const cols = this.getColsForDifficulty(difficulty);
-    const correctBoxes = this.getCorrectBoxesForDifficulty(difficulty);
-
-    const grid = Array(rows)
-      .fill()
-      .map(() =>
-        Array(cols)
-          .fill()
-          .map(() => ({
-            revealed: false,
-            isCorrect: false,
-          }))
-      );
-
-    // Place correct boxes
-    for (let row = 0; row < rows; row++) {
-      const correctIndices = new Set();
-      while (correctIndices.size < correctBoxes) {
-        correctIndices.add(Math.floor(Math.random() * cols));
-      }
-      correctIndices.forEach((col) => {
-        grid[row][col].isCorrect = true;
-      });
-    }
-
-    return grid;
-  },
-
-  getColsForDifficulty(difficulty) {
-    switch (difficulty) {
-      case "Easy":
-        return 4;
-      case "Medium":
-        return 4;
-      case "Hard":
-        return 2;
-      case "Extreme":
-        return 3;
-      case "Nightmare":
-        return 4;
-      default:
-        return 4;
-    }
-  },
-
-  getCorrectBoxesForDifficulty(difficulty) {
-    switch (difficulty) {
-      case "Easy":
-        return 3;
-      case "Medium":
-        return 2;
-      case "Hard":
-        return 1;
-      case "Extreme":
-        return 1;
-      case "Nightmare":
-        return 1;
-      default:
-        return 3;
-    }
-  },
-
-  getMultiplier(difficulty) {
-    switch (difficulty) {
-      case "Easy":
-        return 1.5;
-      case "Medium":
-        return 2;
-      case "Hard":
-        return 3;
-      case "Extreme":
-        return 4;
-      case "Nightmare":
-        return 5;
-      default:
-        return 1.5;
-    }
-  },
-
-  getRowColFromIndex(index) {
-    const row = Math.floor(index / 4); // Assuming 4 columns
-    const col = index % 4;
-    return { row, col };
   },
 
   async continueGame(userId) {
@@ -400,12 +318,10 @@ const service = {
       }
 
       return {
-        ...tower.toObject(),
+        ...serializeTowerState(tower),
         hasActiveGame: true,
         existingGame: false,
-        currentRow: tower.currentRow,
-        grid: tower.grid,
-        selectedBoxes: tower.selectedBoxes || [],
+        fairness: buildTowerFairnessPayload(tower),
       };
     } catch (error) {
       throw new Error(error.message || "Failed to continue game");

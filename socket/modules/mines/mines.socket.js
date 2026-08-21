@@ -146,7 +146,11 @@ const setupMinesSocket = () => {
             gameWon: false,
             hasActiveGame: false,
             profit: result.profit,
+            multiplier: result.multiplier,
+            payout: result.payout,
             revealedDiamonds: result.revealedDiamonds,
+            betAmount: result.betAmount,
+            fairness: result.fairness,
             newBalance: result.newBalance,
           });
         } else {

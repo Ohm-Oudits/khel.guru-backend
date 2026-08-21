@@ -60,7 +60,7 @@ const setupCrashSocket = () => {
           socket.emit("error", { message: "Login required to bet" });
           return;
         }
-        const { betAmount, walletType } = data || {};
+        const { betAmount, walletType, autoCashoutAt } = data || {};
         if (
           betAmount == null ||
           Number.isNaN(Number(betAmount)) ||
@@ -70,7 +70,12 @@ const setupCrashSocket = () => {
           return;
         }
 
-        const result = await service.placeBet(userId, betAmount, walletType);
+        const result = await service.placeBet(
+          userId,
+          betAmount,
+          walletType,
+          autoCashoutAt
+        );
         if (result.error) {
           socket.emit("error", { message: result.error });
           return;
@@ -88,13 +93,15 @@ const setupCrashSocket = () => {
     });
 
     // Cashout: credit stake x multiplier once for the active bet.
-    socket.on("cash_out", async () => {
+    socket.on("cash_out", async (data) => {
       try {
         if (!userId) {
           socket.emit("error", { message: "Login required to cash out" });
           return;
         }
-        const result = await service.cashOut(userId);
+        const result = await service.cashOut(userId, {
+          atMultiplier: data?.multiplier,
+        });
         if (result.error) {
           socket.emit("error", { message: result.error });
           return;

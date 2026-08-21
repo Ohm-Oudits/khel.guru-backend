@@ -72,10 +72,7 @@ const setupLimboSocket = () => {
         if (result.error) {
           socket.emit("error", { message: result.error });
         } else {
-          // Emit to specific user room
-          limboNamespace
-            .to(`limbo:${userId}`)
-            .emit("bet_result", result.result);
+          socket.emit("bet_result", result.result);
         }
       } catch (err) {
         socket.emit("error", { message: err.message });

@@ -12,6 +12,7 @@ import {
   HILO_BLACKJACK_EVENT_COUNT,
   buildCardFairnessPayload,
   cardsFromFloats,
+  hiloDealtFromHistory,
   toHiloCard,
 } from "../../../services/cardFairness.js";
 import { applyPickMultiplier, getHiloOdds, pickFactor } from "./hilo.odds.js";
@@ -45,6 +46,7 @@ const serializeHilo = (game, extra = {}) => {
       clientSeed: obj.clientSeed,
       serverSeedHash: obj.serverSeedHash,
       dealIndex: obj.dealIndex,
+      dealt: hiloDealtFromHistory(obj.historyCards),
     }),
     ...extra,
   };
@@ -407,6 +409,7 @@ const service = {
           clientSeed: claimed.clientSeed,
           serverSeedHash: claimed.serverSeedHash,
           dealIndex: claimed.dealIndex,
+          dealt: hiloDealtFromHistory(claimed.historyCards),
         }),
       };
     } catch (error) {

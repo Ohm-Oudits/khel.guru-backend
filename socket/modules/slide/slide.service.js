@@ -6,7 +6,57 @@ import {
   creditGameWin,
   resolveGameWalletType,
 } from "../../../services/casinoWallet.service.js";
-import { createHouseStream, deriveCrashPoint } from "../../../services/provablyFair.service.js";
+import {
+  createSeedRecordPayload,
+  deriveSlideMultiplier,
+  SLIDE_FAIRNESS_FORMULA,
+  takeFairnessFloats,
+} from "../../../services/provablyFair.service.js";
+import { parseSlideTarget, settleSlideBet } from "./slide.payout.js";
+
+const SLIDE_CLIENT_SEED = "slide-public";
+
+const commitSlideRound = () => {
+  const payload = createSeedRecordPayload({
+    gameKey: "slide",
+    clientSeed: SLIDE_CLIENT_SEED,
+  });
+  const [float] = takeFairnessFloats({
+    serverSeed: payload.serverSeed,
+    clientSeed: payload.clientSeed,
+    nonce: 0,
+    count: 1,
+  });
+  return {
+    serverSeed: payload.serverSeed,
+    serverSeedHash: payload.serverSeedHash,
+    clientSeed: payload.clientSeed,
+    nonce: 0,
+    resultMultiplier: deriveSlideMultiplier(float),
+  };
+};
+
+const publicCommitment = (round) => {
+  if (!round) return null;
+  return {
+    clientSeed: round.clientSeed,
+    nonce: round.nonce,
+    serverSeedHash: round.serverSeedHash,
+    formula: SLIDE_FAIRNESS_FORMULA,
+  };
+};
+
+const publicReveal = (round) => {
+  if (!round) return null;
+  return {
+    ...publicCommitment(round),
+    serverSeed: round.serverSeed,
+    resultMultiplier: round.resultMultiplier,
+  };
+};
+
+let activeRound = commitSlideRound();
+let revealedRound = null;
 
 const WAIT_MS = 5_000;
 const SPIN_MS = 5_000;
@@ -47,6 +97,10 @@ const snapshot = () => {
     waitMs: WAIT_MS,
     spinMs: SPIN_MS,
     resultMs: RESULT_MS,
+    fairness:
+      gameState.phase === "result"
+        ? publicReveal(revealedRound)
+        : publicCommitment(activeRound),
   };
 };
 
@@ -60,6 +114,8 @@ const resetToWaiting = () => {
   gameState.currentRound += 1;
   gameState.targetMultiplier = null;
   gameState.activeBets.clear();
+  revealedRound = null;
+  activeRound = commitSlideRound();
   beginPhase("waiting");
 };
 
@@ -115,15 +171,16 @@ const service = {
         return { error: "Authentication required" };
       }
 
-      const { betAmount, targetMultiplier, walletType } = betData;
+      const { betAmount, walletType, targetMultiplier } = betData;
+      const playerTarget = parseSlideTarget(targetMultiplier);
+      if (playerTarget == null) {
+        return { error: "Invalid target multiplier" };
+      }
 
       if (
         betAmount == null ||
         Number.isNaN(Number(betAmount)) ||
-        Number(betAmount) < 0 ||
-        !targetMultiplier ||
-        targetMultiplier < 1 ||
-        targetMultiplier > 51
+        Number(betAmount) < 0
       ) {
         return { error: "Invalid bet parameters" };
       }
@@ -157,8 +214,8 @@ const service = {
 
       gameState.activeBets.set(userId, {
         betAmount: debit.stake,
-        targetMultiplier,
         walletType: resolvedWalletType,
+        targetMultiplier: playerTarget,
         timestamp: Date.now(),
       });
 
@@ -170,20 +227,28 @@ const service = {
 
   async processRoundResults() {
     try {
-      const targetMultiplier = generateMultiplier();
-      gameState.targetMultiplier = targetMultiplier;
+      const round = activeRound;
+      if (!round) {
+        return { error: "Slide round was not committed" };
+      }
+      const resultMultiplier = round.resultMultiplier;
+      revealedRound = round;
+      gameState.targetMultiplier = resultMultiplier;
 
       const settledBets = new Map(gameState.activeBets);
       gameState.activeBets.clear();
 
       for (const [userId, bet] of settledBets) {
-        const { betAmount, targetMultiplier: betTarget, walletType } = bet;
-        const isWin = Math.abs(betTarget - targetMultiplier) < 0.01;
-        const winAmount = isWin ? betAmount * targetMultiplier : 0;
+        const { betAmount, walletType, targetMultiplier } = bet;
+        const settlement = settleSlideBet({
+          betAmount,
+          targetMultiplier,
+          resultMultiplier,
+        });
 
         const credit = await creditGameWin(userId, {
           gameKey: "slide",
-          amount: winAmount,
+          amount: settlement.payout,
           walletType: walletType || "demo",
         });
 
@@ -191,37 +256,40 @@ const service = {
           .to(`slide:${userId}`)
           .emit("bet_result", {
             round: gameState.currentRound,
-            multiplier: targetMultiplier,
+            multiplier: resultMultiplier,
+            targetMultiplier,
             betAmount,
-            targetMultiplier: betTarget,
-            isWin,
-            winAmount,
+            isWin: settlement.isWin,
+            winAmount: settlement.payout,
             newBalance: credit.balance,
             walletType: walletType || "demo",
+            nonce: round.nonce,
+            clientSeed: round.clientSeed,
+            serverSeedHash: round.serverSeedHash,
+            serverSeed: round.serverSeed,
+            fairness: publicReveal(round),
           });
       }
 
       gameState.roundResults.unshift({
         round: gameState.currentRound,
-        multiplier: targetMultiplier,
+        multiplier: resultMultiplier,
         timestamp: Date.now(),
       });
       if (gameState.roundResults.length > 10) {
         gameState.roundResults.pop();
       }
 
-      return { success: true, targetMultiplier, round: gameState.currentRound };
+      return {
+        success: true,
+        targetMultiplier: resultMultiplier,
+        round: gameState.currentRound,
+        fairness: publicReveal(round),
+      };
     } catch (error) {
       return { error: "An error occurred while processing round results" };
     }
   },
-};
-
-const houseStream = createHouseStream("slide");
-
-const generateMultiplier = () => {
-  const { floats } = houseStream.next(1);
-  return Math.min(50, deriveCrashPoint(floats[0]));
 };
 
 let gameLoopInterval;
@@ -254,6 +322,7 @@ const startGameLoop = () => {
           ...snapshot(),
           multiplier: result.targetMultiplier,
           round: result.round,
+          fairness: result.fairness,
         });
       }
       return;

@@ -4,20 +4,17 @@ import { chances } from "./constants.js";
 import {
   debitGameStake,
   creditGameWin,
+  refundGameStake,
 } from "../../../services/casinoWallet.service.js";
-
-const generateRandomNumbers = (count, min, max) => {
-  const numbers = new Set();
-  while (numbers.size < count) {
-    const randomNumber = Math.floor(Math.random() * (max - min + 1)) + min;
-    numbers.add(randomNumber);
-  }
-  return Array.from(numbers);
-};
+import { consumeGameFloats } from "../../../services/fairnessConsume.service.js";
+import {
+  drawKenoHitsFromFloats,
+  KENO_EVENT_COUNT,
+  KENO_FAIRNESS_FORMULA,
+} from "../../../services/provablyFair.service.js";
 
 const service = {
   async playGame(userId, checkedBoxes, bet, risk, walletType = "demo") {
-    // Debit the stake from the wallet first; a losing bet keeps this debit.
     const betAmount = parseFloat(bet);
     const debit = await debitGameStake(userId, {
       gameKey: "keno",
@@ -39,20 +36,24 @@ const service = {
         throw new Error("User not found");
       }
 
-      // Create grid
+      const fairnessDraw = await consumeGameFloats({
+        userId,
+        gameKey: "keno",
+        count: KENO_EVENT_COUNT,
+      });
+      const hits = drawKenoHitsFromFloats(fairnessDraw.floats);
+      const gifts = hits.map((hit) => hit - 1);
+
       const grid = Array.from({ length: 40 }, () => ({
         type: "diamond",
         revealed: true,
       }));
-
-      const gifts = generateRandomNumbers(10, 0, 39);
 
       const matches = gifts.filter((num) => checkedBoxes.includes(num)).length;
 
       const payout =
         chances(risk)[checkedBoxes.length - 1]?.values[0]?.[matches] || 0;
 
-      // payout is a multiplier; credit the total return (stake * multiplier).
       const winAmount = betAmount * payout;
       const credit = await creditGameWin(userId, {
         gameKey: "keno",
@@ -77,13 +78,27 @@ const service = {
         success: true,
         grid,
         gifts,
+        hits,
         matches,
         payout,
         winAmount,
         newBalance,
         walletType,
+        fairness: {
+          gameKey: "keno",
+          clientSeed: fairnessDraw.clientSeed,
+          serverSeedHash: fairnessDraw.serverSeedHash,
+          nonce: fairnessDraw.nonce,
+          hits,
+          formula: KENO_FAIRNESS_FORMULA,
+        },
       };
     } catch (error) {
+      await refundGameStake(userId, {
+        gameKey: "keno",
+        amount: betAmount,
+        walletType,
+      });
       throw new Error(
         "An error occurred while playing the game: " + error.message
       );

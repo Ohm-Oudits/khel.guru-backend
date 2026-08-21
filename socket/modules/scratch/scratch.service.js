@@ -8,8 +8,13 @@ import {
   resolveGameWalletType,
 } from "../../../services/casinoWallet.service.js";
 
-const balloonTypes = ["#F28B82", "#FBBC05", "#34A853", "#4285F4", "#9A67EA"];
-const diamondTypes = ["red", "blue", "green", "yellow", "purple"];
+import { consumeGameFloats } from "../../../services/fairnessConsume.service.js";
+import {
+  deriveScratchGridFromFloats,
+  publicScratchFairness,
+  publicScratchGrid,
+  SCRATCH_FLOAT_COUNT,
+} from "./scratch.fairness.js";
 
 const displaySlots = [
   { diamonds: 8, different: 0, free: 1, multiplier: 100.0 },
@@ -27,6 +32,16 @@ const displaySlots = [
 ];
 
 const GRID_CELLS = 9;
+
+export const toPublicScratchGame = (game) => {
+  if (!game) return null;
+  const obj = typeof game.toObject === "function" ? game.toObject() : { ...game };
+  return {
+    ...obj,
+    grid: publicScratchGrid(obj.grid),
+    fairness: publicScratchFairness(obj.fairness || {}),
+  };
+};
 
 function countPatternFromGrid(grid) {
   const counts = {};
@@ -62,6 +77,8 @@ function findMatchingPattern(mainCount, secondCount, freeCount) {
 }
 
 const service = {
+  toPublicScratchGame,
+
   async getActiveGame(userId) {
     console.log(`🔍 Fetching active game for user ${userId}`);
     try {
@@ -135,15 +152,12 @@ const service = {
         deductedAmount: betAmount,
       });
 
-      // Create grid with random colors
-      const grid = Array.from({ length: 9 }, () => ({
-        revealed: false,
-        animating: false,
-        balloonColor:
-          balloonTypes[Math.floor(Math.random() * balloonTypes.length)],
-        diamondColor:
-          diamondTypes[Math.floor(Math.random() * diamondTypes.length)],
-      }));
+      const fairness = await consumeGameFloats({
+        userId,
+        gameKey: "scratch",
+        count: SCRATCH_FLOAT_COUNT,
+      });
+      const grid = deriveScratchGridFromFloats(fairness.floats);
 
       const scratchGame = new ScratchGame({
         userId,
@@ -153,6 +167,11 @@ const service = {
         isAutoBet,
         remainingBets: isAutoBet ? numberOfBets - 1 : 0,
         walletType: resolvedWalletType,
+        fairness: {
+          nonce: fairness.nonce,
+          clientSeed: fairness.clientSeed,
+          serverSeedHash: fairness.serverSeedHash,
+        },
       });
 
       try {
@@ -306,6 +325,11 @@ const service = {
           isCompleted: true,
           newBalance: credit.balance,
           walletType,
+          fairness: {
+            ...publicScratchFairness(game.fairness || {}),
+            diamonds: game.grid.map((cell) => cell.diamondColor),
+            multiplier,
+          },
         },
       };
 
@@ -322,7 +346,7 @@ const service = {
           game.remainingBets,
           walletType
         );
-        gameResult.newGame = newGame;
+        gameResult.newGame = toPublicScratchGame(newGame);
       }
 
       return gameResult;

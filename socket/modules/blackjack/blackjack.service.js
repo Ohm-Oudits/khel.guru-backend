@@ -10,6 +10,7 @@ import {
 import { consumeGameFloats } from "../../../services/fairnessConsume.service.js";
 import {
   HILO_BLACKJACK_EVENT_COUNT,
+  blackjackDealtFromState,
   buildCardFairnessPayload,
   cardsFromFloats,
   toBlackjackCard,
@@ -147,6 +148,7 @@ const sanitizeBlackjack = (game) => {
           clientSeed: obj.clientSeed,
           serverSeedHash: obj.serverSeedHash,
           dealIndex: obj.dealIndex,
+          dealt: blackjackDealtFromState(obj),
         })
       : null;
   obj.payoutTable = BLACKJACK_PAYOUT_FORMULAS;

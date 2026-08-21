@@ -10,7 +10,8 @@ class ParachuteGame {
     difficulty = "medium",
     walletType = "demo",
     crashPoint = 1,
-    onCrash = null
+    onCrash = null,
+    fairness = null
   ) {
     if (this.activeGames.has(userId)) {
       return { error: "Game already in progress" };
@@ -28,6 +29,7 @@ class ParachuteGame {
       hasCheckedOut: false,
       intervalId: null,
       onCrash,
+      fairness,
     };
 
     this.activeGames.set(userId, gameState);
@@ -124,6 +126,7 @@ class ParachuteGame {
       multiplier: cashoutMultiplier,
       crashPoint,
       winAmount: gameState.betAmount * cashoutMultiplier,
+      fairness: gameState.fairness,
     };
   }
 

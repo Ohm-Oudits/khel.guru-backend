@@ -62,8 +62,82 @@ export const toBaccaratCard = (card) => ({
   value: card.value,
 });
 
+export const cardLabel = (card) => {
+  if (!card || card.hidden || card.value === "hidden" || !card.suit) {
+    return null;
+  }
+  return `${card.suit}${card.value}`;
+};
+
+const shoeIndexFromBlackjackId = (id) => {
+  const match = String(id || "").match(/-(\d+)$/);
+  if (!match) return null;
+  const index = Number(match[1]);
+  return Number.isFinite(index) ? index : null;
+};
+
+export const hiloDealtFromHistory = (historyCards = []) =>
+  (historyCards || [])
+    .map((card, index) => {
+      const label = cardLabel(card);
+      return label ? { index, label } : null;
+    })
+    .filter(Boolean);
+
+export const blackjackDealtFromState = (game = {}) => {
+  const cards = [];
+  if (game.isSplit && Array.isArray(game.splitHands)) {
+    for (const hand of game.splitHands) {
+      cards.push(...(hand || []));
+    }
+  } else {
+    cards.push(...(game.userCards || []));
+  }
+  cards.push(...(game.dealerCards || []));
+
+  return cards
+    .map((card) => {
+      const label = cardLabel(card);
+      if (!label) return null;
+      return { index: shoeIndexFromBlackjackId(card.id), label };
+    })
+    .filter(Boolean)
+    .sort((a, b) => {
+      if (a.index == null && b.index == null) return 0;
+      if (a.index == null) return 1;
+      if (b.index == null) return -1;
+      return a.index - b.index;
+    });
+};
+
+/** HMAC order is player 2, banker 2, then extras in the order they were drawn. */
+export const baccaratDealtFromHands = (playerCards = [], bankerCards = []) => {
+  const ordered = [
+    playerCards[0],
+    playerCards[1],
+    bankerCards[0],
+    bankerCards[1],
+  ];
+  if (playerCards[2]) ordered.push(playerCards[2]);
+  if (bankerCards[2]) ordered.push(bankerCards[2]);
+  return ordered
+    .map((card, index) => {
+      const label = cardLabel(card);
+      return label ? { index, label } : null;
+    })
+    .filter(Boolean);
+};
+
 export const buildCardFairnessPayload = (
-  { gameKey, nonce, clientSeed, serverSeedHash, serverSeed, dealIndex },
+  {
+    gameKey,
+    nonce,
+    clientSeed,
+    serverSeedHash,
+    serverSeed,
+    dealIndex,
+    dealt = [],
+  },
   { revealServerSeed = false, extra = {} } = {}
 ) => ({
   gameKey,
@@ -71,6 +145,8 @@ export const buildCardFairnessPayload = (
   clientSeed,
   serverSeedHash,
   dealIndex,
+  dealt,
+  formula: CARD_FAIRNESS_FORMULA,
   ...(revealServerSeed && serverSeed ? { serverSeed } : {}),
   ...extra,
 });

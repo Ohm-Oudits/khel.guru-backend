@@ -1,3 +1,8 @@
+// Stake-style Keno paytables: 40 numbers, 10 drawn, 1% house edge.
+// Hit probability is hypergeometric: P(h) = C(k,h) C(40-k, 10-h) / C(40,10).
+// Each pick-count row satisfies Σ P(h) M(h) ≈ 0.99. Risk only changes volatility.
+// All-hit-only lines (High 1–3) use M = 0.99 / P(h). Do not set each partial
+// independently as 0.99/P(h) — the whole row must sum to 0.99.
 const classicChances = [
   {
     length: 1,
@@ -142,7 +147,7 @@ const lowChances = [
     values: [
       {
         0: 0.0,
-        1: 1.85,
+        1: 3.96,
       },
     ],
   },
@@ -172,10 +177,10 @@ const lowChances = [
     values: [
       {
         0: 0.0,
-        1: 0.8,
-        2: 2.2,
-        3: 7.9,
-        4: 90.0,
+        1: 0.6,
+        2: 1.6,
+        3: 5.8,
+        4: 66.3,
       },
     ],
   },
@@ -280,7 +285,7 @@ const mediumChances = [
     values: [
       {
         0: 0.0,
-        1: 2.75,
+        1: 3.96,
       },
     ],
   },
@@ -310,10 +315,10 @@ const mediumChances = [
     values: [
       {
         0: 0.0,
-        1: 0.8,
-        2: 1.7,
-        3: 10.0,
-        4: 100.0,
+        1: 0.59,
+        2: 1.25,
+        3: 7.37,
+        4: 73.9,
       },
     ],
   },
@@ -428,7 +433,7 @@ const highChances = [
       {
         0: 0.0,
         1: 0.0,
-        2: 17.1,
+        2: 17.16,
       },
     ],
   },
@@ -439,7 +444,7 @@ const highChances = [
         0: 0.0,
         1: 0.0,
         2: 0.0,
-        3: 81.5,
+        3: 81.51,
       },
     ],
   },

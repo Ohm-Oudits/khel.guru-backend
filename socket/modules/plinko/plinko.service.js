@@ -5,44 +5,31 @@ import {
   creditGameWin,
   resolveGameWalletType,
 } from "../../../services/casinoWallet.service.js";
+import { consumeGameFloats } from "../../../services/fairnessConsume.service.js";
+import { floatsToPlinkoPath, pathToBin } from "../../../services/provablyFair.service.js";
 import {
-  createSeedRecordPayload,
-  derivePlinkoPath,
-} from "../../../services/provablyFair.service.js";
-import ProvablyFairSeed from "../../../models/provablyFairSeed.model.js";
-import { BIN_PAYOUTS } from "./plinko.payouts.js";
+  getPlinkoTable,
+  normalizePlinkoRows,
+  PLINKO_FAIRNESS_FORMULA,
+  settlePlinkoDrop,
+} from "./plinko.payouts.js";
 
 const takePlinkoOutcome = async (userId, rows) => {
-  let seed = await ProvablyFairSeed.findOne({
+  const n = normalizePlinkoRows(rows);
+  const consumed = await consumeGameFloats({
     userId,
     gameKey: "plinko",
-    status: "active",
-  }).sort({ createdAt: -1 });
-
-  if (!seed) {
-    seed = await ProvablyFairSeed.create({
-      userId,
-      ...createSeedRecordPayload({ gameKey: "plinko" }),
-    });
-  }
-
-  const nonce = seed.nonce;
-  const outcome = derivePlinkoPath({
-    serverSeed: seed.serverSeed,
-    clientSeed: seed.clientSeed,
-    nonce,
-    rows,
+    count: n,
   });
-
-  seed.nonce += 1;
-  seed.lastUsedAt = new Date();
-  await seed.save();
+  const path = floatsToPlinkoPath(consumed.floats);
+  const bin = pathToBin(path);
 
   return {
-    ...outcome,
-    nonce,
-    clientSeed: seed.clientSeed,
-    serverSeedHash: seed.serverSeedHash,
+    path,
+    bin,
+    nonce: consumed.nonce,
+    clientSeed: consumed.clientSeed,
+    serverSeedHash: consumed.serverSeedHash,
   };
 };
 
@@ -93,7 +80,7 @@ const service = {
       }
 
       const { dropId, betAmount, rows, risk, walletType } = data || {};
-      const table = BIN_PAYOUTS[rows]?.[risk];
+      const table = getPlinkoTable(rows, risk);
       if (!dropId || !table) {
         return { error: "Invalid plinko parameters" };
       }
@@ -109,21 +96,36 @@ const service = {
       }
 
       const outcome = await takePlinkoOutcome(userId, rows);
-      const multiplier = table[outcome.bin];
-      if (multiplier == null) {
+      const settled = settlePlinkoDrop({
+        betAmount: debit.stake,
+        rows,
+        risk,
+        bin: outcome.bin,
+      });
+      if (settled.multiplier == null) {
         return { error: "Invalid plinko result", dropId };
       }
 
-      pendingDrops.set(dropKey(userId, dropId), {
-        betAmount: debit.stake,
-        multiplier,
-        bin: outcome.bin,
-        path: outcome.path,
-        walletType: resolvedWalletType,
-        payout: debit.stake * multiplier,
+      const fairness = {
         nonce: outcome.nonce,
         clientSeed: outcome.clientSeed,
         serverSeedHash: outcome.serverSeedHash,
+        rows,
+        risk,
+        path: outcome.path,
+        bin: outcome.bin,
+        multiplier: settled.multiplier,
+        formula: PLINKO_FAIRNESS_FORMULA,
+      };
+
+      pendingDrops.set(dropKey(userId, dropId), {
+        betAmount: debit.stake,
+        multiplier: settled.multiplier,
+        bin: outcome.bin,
+        path: outcome.path,
+        walletType: resolvedWalletType,
+        payout: settled.payout,
+        fairness,
       });
 
       return {
@@ -132,12 +134,10 @@ const service = {
           dropId,
           bin: outcome.bin,
           path: outcome.path,
-          multiplier,
+          multiplier: settled.multiplier,
           betAmount: debit.stake,
           walletType: resolvedWalletType,
-          nonce: outcome.nonce,
-          clientSeed: outcome.clientSeed,
-          serverSeedHash: outcome.serverSeedHash,
+          ...fairness,
         },
       };
     } catch (error) {
@@ -175,9 +175,10 @@ const service = {
           multiplier: pending.multiplier,
           payout: pending.payout,
           betAmount: pending.betAmount,
-          nonce: pending.nonce,
-          clientSeed: pending.clientSeed,
-          serverSeedHash: pending.serverSeedHash,
+          fairness: pending.fairness,
+          nonce: pending.fairness.nonce,
+          clientSeed: pending.fairness.clientSeed,
+          serverSeedHash: pending.fairness.serverSeedHash,
           balance: credit.balance,
           newBalance: credit.balance,
           walletType: pending.walletType,

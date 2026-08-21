@@ -1,7 +1,6 @@
 import User from "../../../models/user.model.js";
 import Game from "../../../models/game.model.js";
 import Baccarat from "../../../models/games/baccarat.model.js";
-import mongoose from "mongoose";
 import {
   debitGameStake,
   creditGameWin,
@@ -15,10 +14,13 @@ import {
 } from "../../../services/provablyFair.service.js";
 import {
   BACCARAT_EVENT_COUNT,
+  baccaratDealtFromHands,
   buildCardFairnessPayload,
   cardsFromFloats,
   toBaccaratCard,
 } from "../../../services/cardFairness.js";
+import { settleBaccaratBet } from "./baccarat.payout.js";
+import { applyBaccaratThirdCards } from "./baccarat.rules.js";
 
 const buildBaccaratShoe = () => {
   const payload = createSeedRecordPayload({
@@ -61,6 +63,7 @@ const serializeBaccarat = (game, { includeDeck = false } = {}) => {
         serverSeedHash: game.serverSeedHash,
         serverSeed: game.serverSeed,
         dealIndex: (game.playerCards?.length || 0) + (game.bankerCards?.length || 0),
+        dealt: baccaratDealtFromHands(game.playerCards, game.bankerCards),
       },
       { revealServerSeed: completed }
     ),
@@ -69,18 +72,16 @@ const serializeBaccarat = (game, { includeDeck = false } = {}) => {
 
 const service = {
   async join(userId) {
-    const session = await mongoose.startSession();
-    session.startTransaction();
-
     try {
-      // Find or create active game
+      // Standalone / in-memory Mongo cannot run multi-document
+      // transactions, so join is a plain find-or-create plus catalog bump.
       let game = await Baccarat.findOne({
         status: { $in: ["waiting", "betting"] },
       });
 
       if (!game) {
         const shoe = buildBaccaratShoe();
-        game = new Baccarat({
+        game = await Baccarat.create({
           gameId: `baccarat_${Date.now()}`,
           status: "waiting",
           deck: shoe.deck,
@@ -89,10 +90,8 @@ const service = {
           serverSeed: shoe.serverSeed,
           serverSeedHash: shoe.serverSeedHash,
         });
-        await game.save({ session });
       }
 
-      // Update user's continued games
       const user = await User.findById(userId);
       if (!user) {
         throw new Error("User not found");
@@ -113,21 +112,17 @@ const service = {
       user.continuedGames.unshift(gameModel._id);
       gameModel.gamesPlayed = gameModel.gamesPlayed + 1;
 
-      await user.save({ session });
-      await gameModel.save({ session });
-      await session.commitTransaction();
+      await user.save();
+      await gameModel.save();
 
       return {
         success: true,
         ...serializeBaccarat(game),
       };
     } catch (error) {
-      await session.abortTransaction();
       throw new Error(
         error.message || "An error occurred while joining the game"
       );
-    } finally {
-      session.endSession();
     }
   },
 
@@ -215,22 +210,22 @@ const service = {
       game.playerCards = game.deck.splice(0, 2);
       game.bankerCards = game.deck.splice(0, 2);
 
-      // Calculate scores
-      game.calculateScores();
-
-      // Determine if third card is needed based on Baccarat rules
-      // This is a simplified version - you might want to add more complex rules
-      if (game.playerScore <= 5) {
-        game.playerCards.push(game.deck.splice(0, 1)[0]);
-      }
-      if (game.bankerScore <= 5) {
-        game.bankerCards.push(game.deck.splice(0, 1)[0]);
-      }
+      const drawn = applyBaccaratThirdCards(
+        game.playerCards,
+        game.bankerCards,
+        () => game.deck.splice(0, 1)[0]
+      );
+      game.playerCards = drawn.playerCards;
+      game.bankerCards = drawn.bankerCards;
 
       // Recalculate scores after third card
       game.calculateScores();
       game.determineWinner();
-      game.processPayouts();
+      for (const bet of game.bets) {
+        const settled = settleBaccaratBet(game.winner, bet.type, bet.amount);
+        bet.status = settled.status;
+        bet.payout = settled.payout;
+      }
 
       game.status = "completed";
       game.endTime = new Date();
@@ -244,7 +239,10 @@ const service = {
       for (const bet of game.bets) {
         const key = String(bet.userId);
         const betWalletType = bet.walletType || "demo";
-        if (bet.status === "won" && bet.payout > 0) {
+        if (
+          (bet.status === "won" || bet.status === "push") &&
+          bet.payout > 0
+        ) {
           const credit = await creditGameWin(bet.userId, {
             gameKey: "baccarat",
             amount: bet.payout,

@@ -70,6 +70,16 @@ const MinesSchema = new mongoose.Schema(
       type: String,
       default: "0.000000",
     },
+    nonce: {
+      type: Number,
+      min: 0,
+    },
+    clientSeed: {
+      type: String,
+    },
+    serverSeedHash: {
+      type: String,
+    },
   },
   { timestamps: true }
 );

@@ -128,6 +128,7 @@ const setupHiloSocket = () => {
             multiplier: result.multiplier,
             newBalance: result.newBalance,
             walletType: result.walletType,
+            fairness: result.fairness,
           });
         } else {
           socket.emit("error", { message: result.error });

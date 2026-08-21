@@ -68,6 +68,11 @@ const scratchGameSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    fairness: {
+      nonce: Number,
+      clientSeed: String,
+      serverSeedHash: String,
+    },
     multiplier: {
       type: Number,
       default: 0,

@@ -8,11 +8,9 @@ const towerSchema = new mongoose.Schema(
       required: true,
     },
     grid: { type: Array, required: true },
+    cols: { type: Number, required: true },
     betAmount: { type: Number, required: true },
-    // Wallet the stake was debited from; the payout is credited back to it.
     walletType: { type: String, enum: ["demo", "cash"], default: "demo" },
-    // Set atomically when the round's payout is settled, so a win/cashout is
-    // credited exactly once even if reveal/checkout race each other.
     settled: { type: Boolean, default: false },
     gameOver: { type: Boolean, default: false },
     gameWon: { type: Boolean, default: false },
@@ -22,6 +20,10 @@ const towerSchema = new mongoose.Schema(
     currentRow: { type: Number, required: true },
     difficulty: { type: String, required: true },
     selectedBoxes: { type: Array, default: [] },
+    stepsCompleted: { type: Number, default: 0 },
+    nonce: { type: Number },
+    clientSeed: { type: String },
+    serverSeedHash: { type: String },
   },
   {
     timestamps: true,

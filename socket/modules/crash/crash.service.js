@@ -7,12 +7,12 @@ import {
   getGameBalance,
 } from "../../../services/casinoWallet.service.js";
 import {
-  createHouseStream,
-  deriveCrashPoint,
-} from "../../../services/provablyFair.service.js";
+  crashCashoutPayout,
+  parseCrashAutoTarget,
+} from "./crash.payout.js";
+import { commitCrashRound, publicCrashFairness } from "./crash.fairness.js";
 
 const activeBets = new Map();
-const houseStream = createHouseStream("crash");
 
 const GROWTH_K = 18;
 const TICK_MS = 80;
@@ -21,12 +21,18 @@ const CRASHED_MS = 2500;
 const HISTORY_MAX = 20;
 
 const gameState = {
-  phase: "running",
+  phase: "waiting",
   round: 1,
   phaseStartedAt: Date.now(),
   crashPoint: 1,
+  pending: null,
+  active: null,
+  revealed: null,
   history: [],
   lastEmitted: 0,
+  rtpPhase: "base",
+  altRemaining: 0,
+  altStreakLength: 0,
 };
 
 const currentMultiplier = () => {
@@ -36,6 +42,16 @@ const currentMultiplier = () => {
   if (gameState.phase === "crashed") return gameState.crashPoint;
   return Math.min(gameState.crashPoint, live);
 };
+
+const currentRound = () =>
+  gameState.phase === "waiting" ? gameState.pending : gameState.active;
+
+const publicFairness = () =>
+  publicCrashFairness({
+    phase: gameState.phase,
+    currentRound: currentRound(),
+    revealedRound: gameState.revealed,
+  });
 
 const snapshot = () => ({
   phase: gameState.phase,
@@ -48,8 +64,8 @@ const snapshot = () => ({
       : gameState.phase === "crashed"
         ? Math.max(0, CRASHED_MS - (Date.now() - gameState.phaseStartedAt))
         : 0,
-  crashPoint:
-    gameState.phase === "crashed" ? gameState.crashPoint : null,
+  crashPoint: gameState.phase === "crashed" ? gameState.crashPoint : null,
+  fairness: publicFairness(),
   history: gameState.history,
   serverNow: Date.now(),
 });
@@ -58,9 +74,52 @@ const emitState = () => {
   io.of("/crash").emit("round_state", snapshot());
 };
 
+const commitUpcomingRound = () => {
+  const startStreak =
+    gameState.rtpPhase === "alt" && gameState.altRemaining === 0;
+  const continuingAlt =
+    gameState.rtpPhase === "alt" && gameState.altRemaining > 0;
+
+  const pending = commitCrashRound({
+    nonce: gameState.round,
+    alt: gameState.rtpPhase === "alt",
+    startStreak,
+    streakLength: continuingAlt ? gameState.altStreakLength : null,
+    streakIndex: continuingAlt
+      ? gameState.altStreakLength - gameState.altRemaining + 1
+      : null,
+  });
+
+  if (startStreak) {
+    gameState.altStreakLength = pending.streakLength;
+    gameState.altRemaining = pending.streakLength;
+  }
+
+  gameState.pending = pending;
+};
+
+const advanceRtpSchedule = (finished) => {
+  if (!finished) return;
+  if (finished.alt) {
+    gameState.altRemaining = Math.max(0, gameState.altRemaining - 1);
+    gameState.rtpPhase = gameState.altRemaining > 0 ? "alt" : "base";
+    if (gameState.rtpPhase === "base") {
+      gameState.altStreakLength = 0;
+    }
+    return;
+  }
+  gameState.rtpPhase = "alt";
+  gameState.altRemaining = 0;
+  gameState.altStreakLength = 0;
+};
+
 const beginRunning = () => {
-  const { floats } = houseStream.next(1);
-  gameState.crashPoint = deriveCrashPoint(floats[0]);
+  if (!gameState.pending) {
+    commitUpcomingRound();
+  }
+  gameState.active = gameState.pending;
+  gameState.pending = null;
+  gameState.crashPoint = gameState.active.crashPoint;
   gameState.phase = "running";
   gameState.phaseStartedAt = Date.now();
   emitState();
@@ -69,11 +128,25 @@ const beginRunning = () => {
 const beginCrashed = async () => {
   gameState.phase = "crashed";
   gameState.phaseStartedAt = Date.now();
+  gameState.revealed = {
+    nonce: gameState.active.nonce,
+    clientSeed: gameState.active.clientSeed,
+    serverSeedHash: gameState.active.serverSeedHash,
+    serverSeed: gameState.active.serverSeed,
+    n: gameState.active.n,
+    crashPoint: gameState.active.crashPoint,
+    rtp: gameState.active.rtp,
+    rtpPercent: gameState.active.rtpPercent,
+    alt: gameState.active.alt,
+    streakLength: gameState.active.streakLength ?? null,
+    streakIndex: gameState.active.streakIndex ?? null,
+  };
   gameState.history = [
     {
       id: Date.now(),
       value: gameState.crashPoint,
       timestamp: new Date().toISOString(),
+      fairness: { ...gameState.revealed },
     },
     ...gameState.history,
   ].slice(0, HISTORY_MAX);
@@ -90,11 +163,39 @@ const beginCrashed = async () => {
   emitState();
 };
 
-const beginWaiting = () => {
-  gameState.round += 1;
+const beginWaiting = ({ first = false } = {}) => {
+  if (!first) {
+    advanceRtpSchedule(gameState.active);
+    gameState.round += 1;
+  }
   gameState.phase = "waiting";
   gameState.phaseStartedAt = Date.now();
+  commitUpcomingRound();
   emitState();
+};
+
+const emitCashout = (userId, result) => {
+  io.of("/crash").to(`crash:${userId}`).emit("cashout_success", {
+    multiplier: result.multiplier,
+    payout: result.payout,
+    newBalance: result.newBalance,
+    walletType: result.walletType,
+  });
+};
+
+const maybeAutoCashouts = async () => {
+  const live = Number(currentMultiplier().toFixed(2));
+  const pending = [...activeBets.entries()];
+  for (const [userId, bet] of pending) {
+    const target = Number(bet.autoCashoutAt);
+    if (!Number.isFinite(target) || target < 1.01) continue;
+    if (live < target) continue;
+    if (target >= gameState.crashPoint) continue;
+    const result = await service.cashOut(userId, { atMultiplier: target });
+    if (result.success) {
+      emitCashout(userId, result);
+    }
+  }
 };
 
 let loopTimer = null;
@@ -104,6 +205,7 @@ const tick = async () => {
       await beginCrashed();
       return;
     }
+    await maybeAutoCashouts();
     const now = Date.now();
     if (now - gameState.lastEmitted >= TICK_MS) {
       gameState.lastEmitted = now;
@@ -128,7 +230,7 @@ const tick = async () => {
 
 const startGameLoop = () => {
   if (loopTimer) return;
-  beginRunning();
+  beginWaiting({ first: true });
   loopTimer = setInterval(() => {
     tick().catch((err) => console.error("Crash loop error:", err));
   }, 50);
@@ -176,7 +278,7 @@ const service = {
     }
   },
 
-  async placeBet(userId, betAmount, walletType = "demo") {
+  async placeBet(userId, betAmount, walletType = "demo", autoCashoutAt = null) {
     if (gameState.phase !== "waiting") {
       return { error: "Betting is closed for this round" };
     }
@@ -193,11 +295,21 @@ const service = {
       return { error: debit.error };
     }
 
-    activeBets.set(userId, { betAmount: debit.stake, walletType });
-    return { success: true, betAmount: debit.stake, newBalance: debit.balance, walletType };
+    activeBets.set(userId, {
+      betAmount: debit.stake,
+      walletType,
+      autoCashoutAt: parseCrashAutoTarget(autoCashoutAt),
+    });
+    return {
+      success: true,
+      betAmount: debit.stake,
+      newBalance: debit.balance,
+      walletType,
+      autoCashoutAt: parseCrashAutoTarget(autoCashoutAt),
+    };
   },
 
-  async cashOut(userId) {
+  async cashOut(userId, { atMultiplier } = {}) {
     const bet = activeBets.get(userId);
     if (!bet) {
       return { error: "No active bet to cash out" };
@@ -206,14 +318,29 @@ const service = {
       return { error: "Cashout is only available while the round is running" };
     }
 
-    const cashoutMultiplier = Number(currentMultiplier().toFixed(2));
+    let cashoutMultiplier = Number(currentMultiplier().toFixed(2));
+    const requested = Number(atMultiplier);
+    const autoAt = Number(bet.autoCashoutAt);
+    if (
+      Number.isFinite(requested) &&
+      Number.isFinite(autoAt) &&
+      requested === autoAt &&
+      requested >= 1.01 &&
+      requested <= cashoutMultiplier
+    ) {
+      cashoutMultiplier = autoAt;
+    }
+
     if (!Number.isFinite(cashoutMultiplier) || cashoutMultiplier < 1) {
       return { error: "Invalid cashout multiplier" };
+    }
+    if (cashoutMultiplier >= gameState.crashPoint) {
+      return { error: "Round already crashed" };
     }
 
     activeBets.delete(userId);
 
-    const payout = bet.betAmount * cashoutMultiplier;
+    const payout = crashCashoutPayout(bet.betAmount, cashoutMultiplier);
     const credit = await creditGameWin(userId, {
       gameKey: "crash",
       amount: payout,

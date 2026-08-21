@@ -7,7 +7,7 @@ class PumpGame {
     this.activeGames = new Map();
   }
 
-  startRound(userId, { betAmount, walletType, risk, popAt }) {
+  startRound(userId, { betAmount, walletType, risk, popAt, fairness = null }) {
     const key = userKey(userId);
     if (this.activeGames.has(key)) {
       return { error: "Game already in progress" };
@@ -30,6 +30,7 @@ class PumpGame {
       currentMultiplier: ladder[0],
       isPopped: false,
       hasCheckedOut: false,
+      fairness,
     };
 
     this.activeGames.set(key, gameState);
@@ -104,6 +105,7 @@ class PumpGame {
       popAt,
       winAmount: gameState.betAmount * cashoutMultiplier,
       walletType: gameState.walletType,
+      fairness: gameState.fairness,
     };
   }
 
@@ -116,8 +118,9 @@ class PumpGame {
     const multiplier =
       Math.floor(Number(gameState.currentMultiplier) * 100) / 100;
     const walletType = gameState.walletType;
+    const fairness = gameState.fairness;
     this.activeGames.delete(key);
-    return { popAt, multiplier, walletType };
+    return { popAt, multiplier, walletType, fairness };
   }
 
   peekRound(userId) {
@@ -127,6 +130,7 @@ class PumpGame {
       popAt: gameState.popAt,
       currentMultiplier: gameState.currentMultiplier,
       walletType: gameState.walletType,
+      fairness: gameState.fairness,
     };
   }
 
