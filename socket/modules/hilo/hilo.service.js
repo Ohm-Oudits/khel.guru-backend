@@ -7,6 +7,14 @@ import {
   refundGameStake,
   resolveGameWalletType,
 } from "../../../services/casinoWallet.service.js";
+import { consumeGameFloats } from "../../../services/fairnessConsume.service.js";
+import {
+  HILO_BLACKJACK_EVENT_COUNT,
+  buildCardFairnessPayload,
+  cardsFromFloats,
+  toHiloCard,
+} from "../../../services/cardFairness.js";
+import { applyPickMultiplier, getHiloOdds, pickFactor } from "./hilo.odds.js";
 
 const CARD_VALUES = [
   "A",
@@ -23,20 +31,114 @@ const CARD_VALUES = [
   "Q",
   "K",
 ];
-const CARD_SUITS = ["♦", "♥", "♠", "♣"];
 
 const getValueIndex = (value) => CARD_VALUES.indexOf(value);
 
-const getRandomCard = () => {
-  const randomValue =
-    CARD_VALUES[Math.floor(Math.random() * CARD_VALUES.length)];
-  const randomSuit = CARD_SUITS[Math.floor(Math.random() * CARD_SUITS.length)];
-  const color = Math.random() < 0.5;
+const serializeHilo = (game, extra = {}) => {
+  const obj = game.toObject ? game.toObject() : { ...game };
+  delete obj.shoe;
+  return {
+    ...obj,
+    fairness: buildCardFairnessPayload({
+      gameKey: "hilo",
+      nonce: obj.nonce,
+      clientSeed: obj.clientSeed,
+      serverSeedHash: obj.serverSeedHash,
+      dealIndex: obj.dealIndex,
+    }),
+    ...extra,
+  };
+};
 
-  return { value: randomValue, suit: randomSuit, color };
+const nextCard = (game) => {
+  if (!Array.isArray(game.shoe) || game.dealIndex >= game.shoe.length) {
+    throw new Error("Card shoe exhausted");
+  }
+  const card = game.shoe[game.dealIndex];
+  game.dealIndex += 1;
+  return card;
+};
+
+const isPreviewRound = (game) => game?.stakeLocked === false;
+
+const isOpenRound = (game) =>
+  Boolean(game) && !game.gameOver && !game.checkedOut;
+
+const dealPreviewShoe = async (userId) => {
+  const fairness = await consumeGameFloats({
+    userId,
+    gameKey: "hilo",
+    count: HILO_BLACKJACK_EVENT_COUNT,
+  });
+  const shoe = cardsFromFloats(fairness.floats).map(toHiloCard);
+  const initialCard = shoe[0];
+  return Hilo.create({
+    userId,
+    currentCard: initialCard,
+    historyCards: [{ ...initialCard, result: null }],
+    betAmount: "0",
+    multiplier: 1.0,
+    stakeLocked: false,
+    shoe,
+    dealIndex: 1,
+    nonce: fairness.nonce,
+    clientSeed: fairness.clientSeed,
+    serverSeedHash: fairness.serverSeedHash,
+  });
+};
+
+const touchContinuedGames = async (userId, catalogGame) => {
+  const user = await User.findById(userId);
+  if (!user) return;
+  const gameIndex = user.continuedGames.findIndex(
+    (gameId) => gameId.toString() === catalogGame._id.toString()
+  );
+  if (gameIndex !== -1) {
+    user.continuedGames.splice(gameIndex, 1);
+  }
+  user.continuedGames.unshift(catalogGame._id);
+  catalogGame.gamesPlayed = catalogGame.gamesPlayed + 1;
+  await user.save();
+  await catalogGame.save();
 };
 
 const service = {
+  async shufflePreview(userId) {
+    try {
+      const catalogGame = await Game.findOne({ name: "hilo" });
+      if (!catalogGame) {
+        return { error: "Game not found" };
+      }
+
+      const existingGame = await Hilo.findOne({ userId });
+      if (isOpenRound(existingGame) && !isPreviewRound(existingGame)) {
+        return { error: "Round already started" };
+      }
+
+      if (
+        isPreviewRound(existingGame) &&
+        isOpenRound(existingGame) &&
+        existingGame.dealIndex < existingGame.shoe.length
+      ) {
+        const newCard = nextCard(existingGame);
+        existingGame.currentCard = newCard;
+        existingGame.historyCards = [{ ...newCard, result: null }];
+        await existingGame.save();
+        return { success: true, game: serializeHilo(existingGame) };
+      }
+
+      if (existingGame) {
+        await existingGame.deleteOne();
+      }
+
+      const preview = await dealPreviewShoe(userId);
+      return { success: true, game: serializeHilo(preview) };
+    } catch (error) {
+      console.error("Shuffle preview error:", error);
+      return { error: "An error occurred while shuffling" };
+    }
+  },
+
   async join(userId, betAmount, walletType = "demo") {
     try {
       const game = await Game.findOne({ name: "hilo" });
@@ -49,21 +151,19 @@ const service = {
         return { error: "User not found" };
       }
 
-      // Check if user has an existing game — resuming an in-flight round
-      // must NOT debit again (its stake was taken when it was created).
       const existingGame = await Hilo.findOne({ userId });
-      if (existingGame && !existingGame.gameOver && !existingGame.checkedOut) {
+      if (isOpenRound(existingGame) && !isPreviewRound(existingGame)) {
         return {
           success: true,
           hasActiveGame: true,
-          game: existingGame,
+          game: serializeHilo(existingGame),
           message: "Existing game found",
         };
       }
 
       const resolvedWalletType = resolveGameWalletType(walletType);
 
-      // Debit the stake exactly once, when the new round is created.
+      // Debit the stake exactly once, when the round is locked.
       const debit = await debitGameStake(userId, {
         gameKey: "hilo",
         amount: betAmount,
@@ -73,8 +173,43 @@ const service = {
         return { error: debit.error };
       }
 
-      // Create new game
-      const initialCard = getRandomCard();
+      if (isPreviewRound(existingGame) && isOpenRound(existingGame)) {
+        try {
+          existingGame.betAmount = String(betAmount);
+          existingGame.walletType = resolvedWalletType;
+          existingGame.stakeLocked = true;
+          existingGame.multiplier = 1.0;
+          await existingGame.save();
+          await touchContinuedGames(userId, game);
+        } catch (lockError) {
+          await refundGameStake(userId, {
+            gameKey: "hilo",
+            amount: betAmount,
+            walletType: resolvedWalletType,
+          });
+          throw lockError;
+        }
+        return {
+          success: true,
+          hasActiveGame: false,
+          game: serializeHilo(existingGame),
+          message: "New game created",
+          newBalance: debit.balance,
+          walletType: resolvedWalletType,
+        };
+      }
+
+      if (existingGame) {
+        await existingGame.deleteOne();
+      }
+
+      const fairness = await consumeGameFloats({
+        userId,
+        gameKey: "hilo",
+        count: HILO_BLACKJACK_EVENT_COUNT,
+      });
+      const shoe = cardsFromFloats(fairness.floats).map(toHiloCard);
+      const initialCard = shoe[0];
       let hiloGame;
       try {
         hiloGame = await Hilo.create({
@@ -83,11 +218,15 @@ const service = {
           historyCards: [{ ...initialCard, result: null }],
           betAmount,
           multiplier: 1.0,
+          stakeLocked: true,
           walletType: resolvedWalletType,
+          shoe,
+          dealIndex: 1,
+          nonce: fairness.nonce,
+          clientSeed: fairness.clientSeed,
+          serverSeedHash: fairness.serverSeedHash,
         });
       } catch (createError) {
-        // The unique userId index rejects a racing duplicate round; the
-        // round never existed, so give the stake back.
         await refundGameStake(userId, {
           gameKey: "hilo",
           amount: betAmount,
@@ -96,22 +235,12 @@ const service = {
         throw createError;
       }
 
-      const gameIndex = user.continuedGames.findIndex(
-        (gameId) => gameId.toString() === game._id.toString()
-      );
-      if (gameIndex !== -1) {
-        user.continuedGames.splice(gameIndex, 1);
-      }
-      user.continuedGames.unshift(game._id);
-      game.gamesPlayed = game.gamesPlayed + 1;
-
-      await user.save();
-      await game.save();
+      await touchContinuedGames(userId, game);
 
       return {
         success: true,
         hasActiveGame: false,
-        game: hiloGame,
+        game: serializeHilo(hiloGame),
         message: "New game created",
         newBalance: debit.balance,
         walletType: resolvedWalletType,
@@ -125,7 +254,9 @@ const service = {
   async getActiveGame(userId) {
     try {
       const hiloGame = await Hilo.findOne({ userId });
-      return hiloGame ? { success: true, game: hiloGame } : { success: false };
+      return hiloGame
+        ? { success: true, game: serializeHilo(hiloGame) }
+        : { success: false };
     } catch (error) {
       console.error("Get active game error:", error);
       return { error: "An error occurred while fetching game" };
@@ -143,7 +274,15 @@ const service = {
         return { error: "Game is already over" };
       }
 
-      const newCard = getRandomCard();
+      if (isPreviewRound(hiloGame)) {
+        return { error: "Place a bet first" };
+      }
+
+      const odds = getHiloOdds(hiloGame.currentCard.value);
+      const chance =
+        prediction === "high" ? odds.high.chance : odds.low.chance;
+
+      const newCard = nextCard(hiloGame);
       const currentValueIndex = getValueIndex(hiloGame.currentCard.value);
       const newValueIndex = getValueIndex(newCard.value);
 
@@ -158,23 +297,25 @@ const service = {
         result = isCorrect ? "low-true" : "low-false";
       }
 
-      // Update game state
       hiloGame.currentCard = newCard;
       hiloGame.historyCards.push({ ...newCard, result });
 
       if (!isCorrect) {
         hiloGame.gameOver = true;
+        hiloGame.multiplier = 0;
         hiloGame.loss = hiloGame.betAmount;
         await hiloGame.deleteOne();
       } else {
-        // Increase multiplier for each correct prediction
-        hiloGame.multiplier += 0.1;
+        hiloGame.multiplier = applyPickMultiplier(
+          hiloGame.multiplier,
+          pickFactor(chance)
+        );
         await hiloGame.save();
       }
 
       return {
         success: true,
-        game: hiloGame,
+        game: serializeHilo(hiloGame),
         result,
         isCorrect,
       };
@@ -195,14 +336,18 @@ const service = {
         return { error: "Game is already over" };
       }
 
-      const newCard = getRandomCard();
+      if (isPreviewRound(hiloGame)) {
+        return { error: "Place a bet first" };
+      }
+
+      const newCard = nextCard(hiloGame);
       hiloGame.currentCard = newCard;
       hiloGame.historyCards.push({ ...newCard, result: null });
       await hiloGame.save();
 
       return {
         success: true,
-        game: hiloGame,
+        game: serializeHilo(hiloGame),
       };
     } catch (error) {
       console.error("Skip error:", error);
@@ -219,6 +364,10 @@ const service = {
 
       if (hiloGame.gameOver || hiloGame.checkedOut) {
         return { error: "Game is already over" };
+      }
+
+      if (isPreviewRound(hiloGame)) {
+        return { error: "Place a bet first" };
       }
 
       // Calculate profit based on multiplier
@@ -252,6 +401,13 @@ const service = {
         multiplier: hiloGame.multiplier,
         newBalance: credit.balance,
         walletType,
+        fairness: buildCardFairnessPayload({
+          gameKey: "hilo",
+          nonce: claimed.nonce,
+          clientSeed: claimed.clientSeed,
+          serverSeedHash: claimed.serverSeedHash,
+          dealIndex: claimed.dealIndex,
+        }),
       };
     } catch (error) {
       console.error("Checkout error:", error);

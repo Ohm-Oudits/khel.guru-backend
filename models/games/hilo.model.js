@@ -53,6 +53,12 @@ const HiloSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    // False while the start card is on the table but no stake has been taken.
+    // Shuffle replaces this card; Bet locks it as the round's start card.
+    stakeLocked: {
+      type: Boolean,
+      default: true,
+    },
     // Wallet the stake was debited from; the cashout is credited back to it.
     walletType: {
       type: String,
@@ -75,6 +81,17 @@ const HiloSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    shoe: {
+      type: Array,
+      default: [],
+    },
+    dealIndex: {
+      type: Number,
+      default: 0,
+    },
+    nonce: { type: Number },
+    clientSeed: { type: String },
+    serverSeedHash: { type: String },
   },
   { timestamps: true }
 );

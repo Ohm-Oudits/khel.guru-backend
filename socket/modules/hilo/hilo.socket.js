@@ -37,11 +37,24 @@ const setupHiloSocket = () => {
     socket.on("get_active_game", async () => {
       try {
         const result = await service.getActiveGame(userId);
+        socket.emit("active_game", {
+          game: result.success ? result.game : null,
+        });
+      } catch (err) {
+        socket.emit("active_game", { game: null });
+      }
+    });
+
+    socket.on("shuffle_preview", async () => {
+      try {
+        const result = await service.shufflePreview(userId);
         if (result.success) {
-          socket.emit("game_state", result.game);
+          socket.emit("preview_state", { game: result.game });
+        } else {
+          socket.emit("preview_state", { error: result.error });
         }
       } catch (err) {
-        socket.emit("error", { message: "Connection error" });
+        socket.emit("preview_state", { error: err.message });
       }
     });
 
