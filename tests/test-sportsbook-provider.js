@@ -30,6 +30,13 @@ const response = mapTheOddsApiOddsResponse(
                 { name: "Under", price: 1.91, point: 179.5 },
               ],
             },
+            {
+              key: "h2h_lay",
+              outcomes: [
+                { name: "Mumbai Indians", price: 1.03 },
+                { name: "Chennai Super Kings", price: 48 },
+              ],
+            },
           ],
         },
       ],
@@ -43,7 +50,16 @@ assert.equal(response.length, 1, "Expected a single normalized event");
 assert.equal(response[0].provider, "the-odds-api");
 assert.equal(response[0].providerEventId, "event-123");
 assert.equal(response[0].sportKey, "cricket_ipl");
-assert.equal(response[0].markets.length, 2, "Expected h2h and totals markets");
+assert.equal(
+  response[0].markets.length,
+  2,
+  "Expected h2h and totals markets; lay quotes must be dropped"
+);
+assert.equal(
+  response[0].markets.some((market) => market.providerMarketKey === "h2h_lay"),
+  false,
+  "Expected exchange lay market to be ignored"
+);
 
 const h2hMarket = response[0].markets.find((market) => market.marketType === "h2h");
 assert(h2hMarket, "Expected h2h market to exist");
@@ -68,5 +84,28 @@ assert.equal(
   "over_179.5",
   "Expected line to be encoded into the selection key"
 );
+
+const { parseOddsApiScoreCell, mapTheOddsApiScoresResponse } = await import(
+  "../services/sportsbookProviders/theOddsApiProvider.js"
+);
+assert.deepEqual(parseOddsApiScoreCell("151/8"), { runs: 151, wickets: 8 });
+assert.deepEqual(parseOddsApiScoreCell("64"), { runs: 64, wickets: null });
+const scored = mapTheOddsApiScoresResponse([
+  {
+    id: "score-1",
+    sport_key: "cricket_test_match",
+    home_team: "Bangladesh",
+    away_team: "Australia",
+    completed: false,
+    scores: [
+      { name: "Bangladesh", score: "64" },
+      { name: "Australia", score: "151/8" },
+    ],
+  },
+]);
+assert.equal(scored[0].scoreboard.home, 64);
+assert.equal(scored[0].scoreboard.away, 151);
+assert.equal(scored[0].scoreboard.awayWickets, 8);
+assert.equal(scored[0].competitors[0].name, "Bangladesh");
 
 console.log("Sportsbook provider mapper test passed");

@@ -1,7 +1,31 @@
 import SportsEvent from "../models/sportsEvent.model.js";
 import { emitEventState } from "../socket/modules/sports/sports.emitter.js";
-import { canSpend } from "./providerUsage.service.js";
+import { pushLiveBoards } from "./liveBoard.service.js";
+import {
+  refreshSportBoardCaches,
+  runDueOddsTick,
+} from "./sportsbookOddsWorker.service.js";
+import { runLiveCricketScorePoll } from "./liveCricketScore.service.js";
+import { driftLiveEventOdds } from "./liveOddsSim.service.js";
+import { canSpend, recordUsage } from "./providerUsage.service.js";
+import { ODDS_API_IO_SPORT_SLUGS } from "./sportsbookCatalog.service.js";
 import { runSportsbookIngest } from "./sportsbookIngest.service.js";
+import { resolveOddsSportKeys } from "./sportsbookSportKeys.js";
+import { pingSportsbookCache } from "./sportsbookOddsCache.service.js";
+
+let oddsApiIoCatalogCursor = 0;
+
+const nextOddsApiIoSportBatch = () => {
+  const slugs = ODDS_API_IO_SPORT_SLUGS;
+  const parsed = Number.parseInt(process.env.SPORTSBOOK_ODDS_IO_SPORT_BATCH || "4", 10);
+  const batch = Number.isFinite(parsed) && parsed > 0 ? parsed : 4;
+  const sports = [];
+  for (let index = 0; index < batch; index += 1) {
+    sports.push(slugs[(oddsApiIoCatalogCursor + index) % slugs.length]);
+  }
+  oddsApiIoCatalogCursor = (oddsApiIoCatalogCursor + batch) % slugs.length;
+  return sports;
+};
 
 // Interval-loop scheduler (slide.service.js precedent). Every loop wraps its
 // body in try/catch and an in-flight guard so a slow tick never overlaps the
@@ -12,11 +36,7 @@ const envMs = (key, fallback) => {
   return Number.isFinite(value) ? value : fallback;
 };
 
-const liveSportKeys = () =>
-  (process.env.SPORTSBOOK_LIVE_SPORT_KEYS || "cricket_ipl,soccer_epl")
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean);
+const liveSportKeys = () => resolveOddsSportKeys();
 
 const estimatedOddsCost = () => {
   const regions = (process.env.THE_ODDS_API_REGIONS || "uk").split(",").filter(Boolean);
@@ -25,7 +45,7 @@ const estimatedOddsCost = () => {
 };
 
 const likelyDurationMs = (sportGroup) => {
-  const hours = { football: 3, cricket: 5 }[sportGroup] || 6;
+  const hours = { football: 3, soccer: 3, cricket: 5 }[sportGroup] || 6;
   return hours * 60 * 60 * 1000;
 };
 
@@ -51,8 +71,36 @@ const loadScoresPipeline = async () => {
 };
 
 const loops = new Map();
+let lastOddsSkipLogAt = 0;
 
-const registerLoop = (name, intervalMs, tick) => {
+const runTick = async (name, state, tick) => {
+  if (state.running) return;
+  if (state.cooldownUntil && Date.now() < state.cooldownUntil) return;
+  state.running = true;
+
+  try {
+    await tick();
+    state.lastError = null;
+    state.cooldownUntil = 0;
+  } catch (error) {
+    state.lastError = error.message;
+    if (/429|rate.?limit/i.test(error.message || "")) {
+      state.cooldownUntil =
+        Date.now() + envMs("SPORTSBOOK_ODDS_IO_429_COOLDOWN_MS", 90000);
+      console.warn(
+        `Sportsbook scheduler loop ${name} rate-limited, cooling down ${state.cooldownUntil - Date.now()}ms`
+      );
+    } else {
+      console.error(`Sportsbook scheduler loop ${name} failed:`, error.message);
+    }
+  } finally {
+    state.runs += 1;
+    state.lastRunAt = new Date();
+    state.running = false;
+  }
+};
+
+const registerLoop = (name, intervalMs, tick, { immediate = false } = {}) => {
   if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
     loops.set(name, { intervalMs, timer: null, enabled: false });
     return;
@@ -65,24 +113,12 @@ const registerLoop = (name, intervalMs, tick) => {
     runs: 0,
     lastRunAt: null,
     lastError: null,
+    cooldownUntil: 0,
     timer: null,
   };
 
-  state.timer = setInterval(async () => {
-    if (state.running) return;
-    state.running = true;
-
-    try {
-      await tick();
-      state.lastError = null;
-    } catch (error) {
-      state.lastError = error.message;
-      console.error(`Sportsbook scheduler loop ${name} failed:`, error.message);
-    } finally {
-      state.runs += 1;
-      state.lastRunAt = new Date();
-      state.running = false;
-    }
+  state.timer = setInterval(() => {
+    runTick(name, state, tick);
   }, intervalMs);
 
   if (typeof state.timer.unref === "function") {
@@ -90,6 +126,9 @@ const registerLoop = (name, intervalMs, tick) => {
   }
 
   loops.set(name, state);
+  if (immediate) {
+    runTick(name, state, tick);
+  }
 };
 
 const flipStartedEventsLive = async (onFlipped = null) => {
@@ -149,11 +188,10 @@ const simTick = async () => {
 };
 
 const oddsTick = async ({ liveOnly }) => {
-  let sportKeys = liveSportKeys();
+  let sportKeys = await liveSportKeys();
 
   if (liveOnly) {
     const liveKeys = await SportsEvent.distinct("sportKey", {
-      provider: "the-odds-api",
       status: "live",
     });
     sportKeys = sportKeys.filter((key) => liveKeys.includes(key));
@@ -167,13 +205,46 @@ const oddsTick = async ({ liveOnly }) => {
     });
 
     if (!verdict.allowed) {
-      console.warn(
-        `Sportsbook odds poll skipped for ${sportKey}: ${verdict.reason}`
-      );
+      if (Date.now() - lastOddsSkipLogAt > 30000) {
+        lastOddsSkipLogAt = Date.now();
+        console.warn(
+          `Sportsbook odds poll skipped: ${verdict.reason} remaining=${verdict.remainingReported}`
+        );
+      }
       return;
     }
 
-    await runSportsbookIngest({ provider: "the-odds-api", sportKey });
+    try {
+      const result = await runSportsbookIngest({
+        provider: "the-odds-api",
+        sportKey,
+      });
+      console.log(
+        `oddsLive sport=${sportKey} ingested=${result.ingestedCount} changes=${result.changes.length}`
+      );
+    } catch (error) {
+      const status = error.response?.status;
+      if (status === 404) {
+        console.warn(`Sportsbook odds poll skipped unknown sport ${sportKey}`);
+        continue;
+      }
+      if (status === 401 || status === 429) {
+        const headers = error.response.headers || {};
+        const remaining = Number.parseFloat(headers["x-requests-remaining"]);
+        await recordUsage("the-odds-api", {
+          used: Number.parseFloat(headers["x-requests-used"]),
+          remaining: Number.isFinite(remaining) ? remaining : 0,
+          cost: Number.parseFloat(headers["x-requests-last"]),
+        });
+        console.warn(
+          `Sportsbook odds poll halted: Odds API ${status} remaining=${
+            Number.isFinite(remaining) ? remaining : 0
+          }`
+        );
+        return;
+      }
+      throw error;
+    }
   }
 
   await flipStartedEventsLive();
@@ -183,10 +254,9 @@ const scoresLiveTick = async () => {
   const { runScoresIngest } = await loadScoresPipeline();
   if (!runScoresIngest) return;
 
-  const liveKeys = await SportsEvent.distinct("sportKey", {
-    provider: "the-odds-api",
-    status: "live",
-  });
+  const knownKeys = new Set(await liveSportKeys());
+  const liveKeys = (await SportsEvent.distinct("sportKey", { status: "live" }))
+    .filter((key) => knownKeys.has(key));
 
   for (const sportKey of liveKeys) {
     const verdict = await canSpend("the-odds-api", {
@@ -195,7 +265,15 @@ const scoresLiveTick = async () => {
     });
     if (!verdict.allowed) return;
 
-    await runScoresIngest({ sportKey });
+    try {
+      await runScoresIngest({ sportKey });
+    } catch (error) {
+      if (error.response?.status === 404) {
+        console.warn(`Sportsbook scores poll skipped unknown sport ${sportKey}`);
+        continue;
+      }
+      throw error;
+    }
   }
 };
 
@@ -251,10 +329,18 @@ const scoresSweepTick = async () => {
 export const startSportsbookScheduler = () => {
   if (loops.size > 0) return;
 
+  pingSportsbookCache().catch((error) => {
+    console.warn(`sportsbook Redis warmup failed: ${error.message}`);
+  });
+
   const defaultProvider = process.env.SPORTSBOOK_DEFAULT_PROVIDER || "mock";
+  const ioOnly =
+    process.env.SPORTSBOOK_IO_ONLY === "true" ||
+    defaultProvider === "odds-api-io";
   const simEnabled =
-    defaultProvider === "simulated" || process.env.SPORTSBOOK_SIM_ALWAYS === "true";
-  const oddsEnabled = Boolean(process.env.THE_ODDS_API_KEY);
+    !ioOnly &&
+    (defaultProvider === "simulated" || process.env.SPORTSBOOK_SIM_ALWAYS === "true");
+  const oddsEnabled = Boolean(process.env.THE_ODDS_API_KEY) && !ioOnly;
 
   registerLoop(
     "simTick",
@@ -268,18 +354,125 @@ export const startSportsbookScheduler = () => {
   );
   registerLoop(
     "oddsLive",
-    oddsEnabled ? envMs("SPORTSBOOK_ODDS_POLL_LIVE_MS", 900000) : 0,
-    () => oddsTick({ liveOnly: true })
+    oddsEnabled ? envMs("SPORTSBOOK_ODDS_POLL_LIVE_MS", 3000) : 0,
+    () => oddsTick({ liveOnly: true }),
+    { immediate: true }
   );
   registerLoop(
     "scoresLive",
-    oddsEnabled ? envMs("SPORTSBOOK_SCORES_POLL_MS", 300000) : 0,
-    scoresLiveTick
+    oddsEnabled ? envMs("SPORTSBOOK_SCORES_POLL_MS", 3000) : 0,
+    scoresLiveTick,
+    { immediate: true }
   );
   registerLoop(
     "scoresSweep",
     oddsEnabled ? envMs("SPORTSBOOK_SCORES_SWEEP_MS", 21600000) : 0,
     scoresSweepTick
+  );
+  // ESPN/Cricbuzz score scrape — unused when Odds-API.io is the only source.
+  registerLoop(
+    "cricketLive",
+    ioOnly ? 0 : envMs("SPORTSBOOK_CRICKET_POLL_MS", 3000),
+    runLiveCricketScorePoll,
+    { immediate: !ioOnly }
+  );
+  registerLoop(
+    "oddsApiIoLiveState",
+    process.env.ODDS_API_IO_KEY
+      ? envMs("SPORTSBOOK_ODDS_IO_LIVE_STATE_MS", 15000)
+      : 0,
+    async () => {
+      const result = await runSportsbookIngest({
+        provider: "odds-api-io",
+        ioMode: "live-state",
+      });
+      await refreshSportBoardCaches(
+        result.changes.map((change) => change.sportGroup)
+      );
+      console.log(
+        `oddsApiIoLiveState ingested=${result.ingestedCount} changes=${result.changes.length}`
+      );
+    },
+    { immediate: true }
+  );
+  registerLoop(
+    "oddsApiIoDiscover",
+    process.env.ODDS_API_IO_KEY
+      ? envMs("SPORTSBOOK_ODDS_IO_DISCOVER_MS", 300000)
+      : 0,
+    async () => {
+      const result = await runSportsbookIngest({
+        provider: "odds-api-io",
+        ioMode: "discover",
+      });
+      await refreshSportBoardCaches(["football", "tennis", "cricket"]);
+      console.log(
+        `oddsApiIoDiscover ingested=${result.ingestedCount} changes=${result.changes.length}`
+      );
+    },
+    { immediate: true }
+  );
+  registerLoop(
+    "oddsApiIoOdds",
+    process.env.ODDS_API_IO_KEY
+      ? envMs("SPORTSBOOK_ODDS_IO_ODDS_MS", 15000)
+      : 0,
+    async () => {
+      const result = await runDueOddsTick({
+        limit: Number.parseInt(process.env.SPORTSBOOK_ODDS_IO_DUE_LIMIT || "40", 10) || 40,
+      });
+      console.log(
+        `oddsApiIoOdds due=${result.due} priced=${result.priced} changed=${result.changed}`
+      );
+    },
+    { immediate: true }
+  );
+  registerLoop(
+    "oddsApiIoCatalog",
+    process.env.ODDS_API_IO_KEY
+      ? envMs("SPORTSBOOK_ODDS_IO_CATALOG_POLL_MS", 900000)
+      : 0,
+    async () => {
+      const sports = nextOddsApiIoSportBatch();
+      const result = await runSportsbookIngest({
+        provider: "odds-api-io",
+        ioMode: "catalog",
+        sports,
+      });
+      console.log(
+        `oddsApiIoCatalog sports=${sports.join(",")} ingested=${result.ingestedCount} changes=${result.changes.length}`
+      );
+    }
+  );
+  registerLoop(
+    "oddsApiIoLive",
+    process.env.ODDS_API_IO_KEY
+      ? envMs("SPORTSBOOK_ODDS_IO_POLL_MS", 0)
+      : 0,
+    async () => {
+      const result = await runSportsbookIngest({
+        provider: "odds-api-io",
+        ioMode: "live",
+      });
+      console.log(
+        `oddsApiIoLive ingested=${result.ingestedCount} changes=${result.changes.length}`
+      );
+    }
+  );
+  registerLoop(
+    "liveBoardPush",
+    ioOnly ? 0 : envMs("SPORTSBOOK_LIVE_BOARD_PUSH_MS", 1000),
+    pushLiveBoards,
+    { immediate: !ioOnly }
+  );
+  // Drift prices on current live boards when The Odds API is unavailable.
+  registerLoop(
+    "oddsSimLive",
+    process.env.SPORTSBOOK_SIM_LIVE_ODDS === "false"
+      ? 0
+      : envMs("SPORTSBOOK_ODDS_SIM_LIVE_MS", 3000),
+    driftLiveEventOdds,
+    { immediate: true }
   );
 
   console.log(

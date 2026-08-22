@@ -53,6 +53,22 @@ export const evaluateBudget = ({
     ? usage.usedReported
     : 0;
   const effectiveUsed = Math.max(localUsed, reportedUsed);
+  const remaining = Number.isFinite(usage?.remainingReported)
+    ? usage.remainingReported
+    : null;
+
+  // The provider's remaining header is ground truth. A high used-count
+  // from earlier in the month must not block leftover credits.
+  if (remaining !== null) {
+    const allowed = remaining >= estimatedCost;
+    return {
+      allowed,
+      effectiveUsed,
+      ceiling: remaining,
+      remainingReported: remaining,
+      reason: allowed ? "within-budget" : "provider-credits-exhausted",
+    };
+  }
 
   // Settlement of already-accepted bets must never starve: scores calls may
   // spend into the reserve, everything else stops at budget - reserve.
@@ -63,6 +79,7 @@ export const evaluateBudget = ({
     allowed,
     effectiveUsed,
     ceiling,
+    remainingReported: remaining,
     reason: allowed
       ? "within-budget"
       : purpose === "scores"

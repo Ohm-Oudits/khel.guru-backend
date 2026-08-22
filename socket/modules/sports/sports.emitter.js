@@ -26,15 +26,17 @@ export const emitOddsUpdate = ({
   const nsp = sportsNamespace();
   if (!nsp) return;
 
+  const emittedAt = new Date().toISOString();
   toEventRooms(nsp, { eventId, sportGroup }).emit("odds_update", {
-    eventId,
+    eventId: String(eventId),
     sportGroup,
-    marketId,
+    marketId: marketId != null ? String(marketId) : marketId,
     providerMarketKey,
     marketType,
     bookmakerKey,
     outcomes,
     capturedAt,
+    emittedAt,
   });
 };
 
@@ -49,11 +51,12 @@ export const emitEventState = ({
   if (!nsp) return;
 
   toEventRooms(nsp, { eventId, sportGroup }).emit("event_state", {
-    eventId,
+    eventId: String(eventId),
     sportGroup,
     status,
     previousStatus,
     startTime,
+    emittedAt: new Date().toISOString(),
   });
 };
 
@@ -62,9 +65,63 @@ export const emitScoreboardUpdate = ({ eventId, sportGroup, scoreboard }) => {
   if (!nsp) return;
 
   toEventRooms(nsp, { eventId, sportGroup }).emit("scoreboard_update", {
-    eventId,
+    eventId: String(eventId),
     sportGroup,
     scoreboard,
+    emittedAt: new Date().toISOString(),
+  });
+};
+
+export const emitSportSnapshot = ({ sportKey, events }) => {
+  const nsp = sportsNamespace();
+  if (!nsp || !sportKey) return;
+
+  nsp.to(`sports:sport:${sportKey}`).emit("sport_snapshot", {
+    sportKey,
+    events,
+    emittedAt: new Date().toISOString(),
+  });
+};
+
+export const emitLiveBoard = ({
+  eventId,
+  sportGroup,
+  status,
+  scoreboard,
+  markets,
+}) => {
+  const nsp = sportsNamespace();
+  if (!nsp) return;
+
+  toEventRooms(nsp, { eventId, sportGroup }).emit("live_board", {
+    eventId: String(eventId),
+    sportGroup,
+    status,
+    scoreboard,
+    markets,
+    emittedAt: new Date().toISOString(),
+  });
+};
+
+export const emitEventUpdate = ({
+  eventId,
+  sportGroup,
+  status,
+  scoreboard,
+  markets,
+  event,
+}) => {
+  const nsp = sportsNamespace();
+  if (!nsp) return;
+
+  toEventRooms(nsp, { eventId, sportGroup }).emit("event_update", {
+    eventId: String(eventId),
+    sportGroup,
+    status,
+    scoreboard,
+    markets,
+    event,
+    emittedAt: new Date().toISOString(),
   });
 };
 
@@ -73,10 +130,11 @@ export const emitMarketSuspended = ({ eventId, sportGroup, marketId, status }) =
   if (!nsp) return;
 
   toEventRooms(nsp, { eventId, sportGroup }).emit("market_suspended", {
-    eventId,
+    eventId: String(eventId),
     sportGroup,
-    marketId,
+    marketId: marketId != null ? String(marketId) : marketId,
     status,
+    emittedAt: new Date().toISOString(),
   });
 };
 
@@ -124,6 +182,17 @@ export const publishIngestChanges = (changes = []) => {
         eventId: change.eventId,
         sportGroup: change.sportGroup,
         scoreboard: change.scoreboard,
+      });
+    }
+
+    if (change.scoreboardChanged || (change.marketChanges || []).length) {
+      emitEventUpdate({
+        eventId: change.eventId,
+        sportGroup: change.sportGroup,
+        status: change.status,
+        scoreboard: change.scoreboard,
+        event: change.event || null,
+        markets: change.markets || null,
       });
     }
 

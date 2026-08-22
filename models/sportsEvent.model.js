@@ -79,6 +79,15 @@ const sportsEventSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    lastSyncedAt: {
+      type: Date,
+      default: null,
+    },
+    nextSyncAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
     ingestVersion: {
       type: Number,
       default: 1,
@@ -96,6 +105,7 @@ const sportsEventSchema = new mongoose.Schema(
 );
 
 sportsEventSchema.index({ provider: 1, providerEventId: 1 }, { unique: true });
+sportsEventSchema.index({ provider: 1, status: 1, nextSyncAt: 1 });
 
 const SportsEvent = mongoose.model("SportsEvent", sportsEventSchema);
 export default SportsEvent;

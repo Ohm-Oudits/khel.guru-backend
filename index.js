@@ -21,6 +21,8 @@ import { apiLimiter, authLimiter } from "./middleware/rateLimiter.js";
 // Import routes
 import userRoutes from "./routes/user.route.js";
 import gameRoutes from "./routes/game.route.js";
+import slotsRoutes from "./routes/slots.route.js";
+import liveRoutes from "./routes/live.route.js";
 import sportRoutes from "./routes/sport.route.js";
 import betsRoutes from "./routes/bets.route.js";
 import walletRoutes from "./routes/wallet.route.js";
@@ -108,7 +110,13 @@ const corsOptions = {
       ? [process.env.FRONTEND_URL, process.env.ADMIN_URL].filter(Boolean)
       : "*",
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "X-Requested-With",
+    "Cache-Control",
+    "Pragma",
+  ],
   credentials: true,
   optionsSuccessStatus: 200,
   maxAge: 86400, // 24 hours
@@ -191,6 +199,10 @@ app.use("/api/user", userRoutes);
 app.use("/api/auth", userRoutes);
 app.use("/api/game", gameRoutes);
 app.use("/api/casino", gameRoutes);
+app.use("/api/casino/slots", slotsRoutes);
+app.use("/api/game/slots", slotsRoutes);
+app.use("/api/casino/live", liveRoutes);
+app.use("/api/game/live", liveRoutes);
 app.use("/api/sport", sportRoutes);
 app.use("/api/sports", sportRoutes);
 app.use("/api/bets", betsRoutes);

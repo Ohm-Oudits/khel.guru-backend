@@ -6,6 +6,7 @@ import {
   getSportsbookEventMarkets,
   getSportsbookEvents,
   getSportsbookProviders,
+  getParticipantLogo,
   getSportsbookUsage,
   ingestSportsbookFeed,
 } from "../controllers/sportsbook.controller.js";
@@ -15,6 +16,7 @@ import { verifyToken } from "../middleware/userTokenCheck.js";
 const router = express.Router();
 
 router.get("/catalog", getSportsbookCatalog);
+router.get("/participants/:participantId/logo", getParticipantLogo);
 router.get("/providers", getSportsbookProviders);
 router.get(
   "/providers/:provider/sports",

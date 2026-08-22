@@ -2,8 +2,8 @@ import mongoose from "mongoose";
 import jwt from "jsonwebtoken";
 
 import { io } from "../../socket.js";
-
-const SPORT_GROUPS = ["cricket", "football", "tennis", "badminton"];
+import { listHydratedSportsEvents } from "../../../services/sportsbookEvents.service.js";
+import { expandSportGroupQuery } from "../../../services/sportsbookCatalog.service.js";
 
 const setupSportsSocket = () => {
   const sportsNamespace = io.of("/sports");
@@ -48,18 +48,32 @@ const setupSportsSocket = () => {
       socket.leave(`sports:event:${eventId}`);
     });
 
-    socket.on("subscribe_sport", ({ sportKey } = {}) => {
-      const group = String(sportKey || "").toLowerCase().trim();
-      if (!SPORT_GROUPS.includes(group)) {
+    socket.on("subscribe_sport", async ({ sportKey } = {}) => {
+      const requested = String(sportKey || "").toLowerCase().trim();
+      const groups = expandSportGroupQuery(requested);
+      if (!groups.length) {
         socket.emit("error", { message: "Unknown sport" });
         return;
       }
-      socket.join(`sports:sport:${group}`);
+      for (const group of groups) {
+        socket.join(`sports:sport:${group}`);
+      }
+      try {
+        const events = await listHydratedSportsEvents({
+          sportKey: requested,
+          limit: 250,
+        });
+        socket.emit("sport_snapshot", { sportKey: requested, events });
+      } catch (error) {
+        socket.emit("error", { message: "Could not load sport snapshot" });
+      }
     });
 
     socket.on("unsubscribe_sport", ({ sportKey } = {}) => {
-      const group = String(sportKey || "").toLowerCase().trim();
-      socket.leave(`sports:sport:${group}`);
+      const groups = expandSportGroupQuery(sportKey);
+      for (const group of groups) {
+        socket.leave(`sports:sport:${group}`);
+      }
     });
 
     socket.on("disconnect", () => {

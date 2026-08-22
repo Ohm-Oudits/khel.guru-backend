@@ -10,6 +10,8 @@
     "test": "node tests/run-tests.js",
     "seed:dev-user": "node scripts/create-dev-user.js",
     "seed:games": "node scripts/seed-games.js",
+    "seed:slots": "node scripts/seed-slots.js",
+    "seed:odds-sports": "node scripts/seed-odds-sports.js",
     "backfill:account-uids": "node scripts/backfill-account-uids.js"
   },
   "keywords": [],
@@ -29,6 +31,7 @@
     "ethers": "^6.17.0",
     "express": "^4.21.2",
     "helmet": "^8.0.0",
+    "ioredis": "^5.11.1",
     "jsonwebtoken": "^9.0.2",
     "mongodb-memory-server": "^11.2.0",
     "mongoose": "^8.10.0",

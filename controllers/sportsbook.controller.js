@@ -2,8 +2,16 @@ import Market from "../models/market.model.js";
 import OddsSnapshot from "../models/oddsSnapshot.model.js";
 import SportsEvent from "../models/sportsEvent.model.js";
 import {
+  buildSportsbookCatalog,
   getSportsbookCatalog as getSportsbookCatalogData,
 } from "../services/sportsbookCatalog.service.js";
+import {
+  isSportsbookIoOnly,
+  listHydratedSportsEvents,
+  sportsEventListFilter,
+} from "../services/sportsbookEvents.service.js";
+import { fetchTheOddsApiSports } from "../services/sportsbookProviders/theOddsApiProvider.js";
+import { fetchOddsApiIoParticipantLogo } from "../services/sportsbookProviders/oddsApiIoProvider.js";
 import {
   discoverSportsbookProviderSports,
   runSportsbookIngest,
@@ -18,7 +26,7 @@ const parseLimit = (value, fallback = 20) => {
     return fallback;
   }
 
-  return Math.min(parsed, 100);
+  return Math.min(parsed, 250);
 };
 
 const hydrateMarketsWithLatestSnapshot = async (markets) =>
@@ -37,7 +45,49 @@ const hydrateMarketsWithLatestSnapshot = async (markets) =>
 
 export const getSportsbookCatalog = async (req, res, next) => {
   try {
-    res.json(getSportsbookCatalogData());
+    let providerSports = [];
+
+    if (process.env.THE_ODDS_API_KEY && !isSportsbookIoOnly()) {
+      try {
+        providerSports = await fetchTheOddsApiSports();
+      } catch {
+        providerSports = [];
+      }
+    }
+
+    const eventRows = await SportsEvent.aggregate([
+      {
+        $match: {
+          status: { $in: ["live", "upcoming"] },
+          ...(isSportsbookIoOnly() ? { provider: "odds-api-io" } : {}),
+        },
+      },
+      {
+        $group: {
+          _id: {
+            sportGroup: "$sportGroup",
+            sportKey: "$sportKey",
+            leagueName: "$leagueName",
+            sportName: "$sportName",
+          },
+          liveCount: {
+            $sum: { $cond: [{ $eq: ["$status", "live"] }, 1, 0] },
+          },
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          sportGroup: "$_id.sportGroup",
+          sportKey: "$_id.sportKey",
+          leagueName: "$_id.leagueName",
+          sportName: "$_id.sportName",
+          liveCount: 1,
+        },
+      },
+    ]);
+
+    res.json(buildSportsbookCatalog({ providerSports, eventRows }));
   } catch (error) {
     next(error);
   }
@@ -55,60 +105,27 @@ export const getSportsbookProviders = async (req, res, next) => {
 
 export const getSportsbookEvents = async (req, res, next) => {
   try {
-    const filters = {};
-
-    if (req.query.sportKey) {
-      // A canonical group like "cricket" matches provider keys such as
-      // cricket_ipl through sportGroup; exact provider keys still work.
-      filters.$or = [
-        { sportKey: req.query.sportKey },
-        { sportGroup: req.query.sportKey },
-      ];
-    }
-
-    if (req.query.status) {
-      filters.status = req.query.status;
-    }
-
-    if (req.query.provider) {
-      filters.provider = req.query.provider;
-    }
+    const sameDay =
+      req.query.sameDay === "1" || req.query.sameDay === "true";
+    const filters = sportsEventListFilter({
+      sportKey: req.query.sportKey,
+      status: req.query.status,
+      provider: req.query.provider,
+      sameDay,
+    });
 
     const limit = parseLimit(req.query.limit);
 
+    res.set("Cache-Control", "no-store, no-cache, must-revalidate");
+
     if (req.query.hydrate) {
-      const events = await SportsEvent.aggregate([
-        { $match: filters },
-        { $sort: { startTime: 1 } },
-        { $limit: limit },
-        {
-          $lookup: {
-            from: "markets",
-            localField: "_id",
-            foreignField: "eventId",
-            as: "markets",
-            pipeline: [
-              {
-                $project: {
-                  title: 1,
-                  marketType: 1,
-                  providerMarketKey: 1,
-                  status: 1,
-                  selections: 1,
-                  latestSnapshotAt: 1,
-                  latestOdds: { $slice: ["$latestOdds", 3] },
-                },
-              },
-            ],
-          },
-        },
-        {
-          $project: {
-            rawPayload: 0,
-            "markets.latestOdds.signature": 0,
-          },
-        },
-      ]);
+      const events = await listHydratedSportsEvents({
+        sportKey: req.query.sportKey,
+        status: req.query.status,
+        provider: req.query.provider,
+        sameDay,
+        limit,
+      });
 
       return res.json({
         filters,
@@ -135,6 +152,7 @@ export const getSportsbookEvents = async (req, res, next) => {
 
 export const getSportsbookEvent = async (req, res, next) => {
   try {
+    res.set("Cache-Control", "no-store, no-cache, must-revalidate");
     const event = await SportsEvent.findById(req.params.eventId).lean();
 
     if (!event) {
@@ -192,6 +210,7 @@ export const ingestSportsbookFeed = async (req, res, next) => {
       message: "Sportsbook feed ingested successfully",
       provider: result.provider,
       sportKey: result.sportKey,
+      sportKeys: result.sportKeys,
       ingestedCount: result.ingestedCount,
       eventIds: result.eventIds,
       changedEventCount: result.changes.length,
@@ -214,6 +233,32 @@ export const getSportsbookUsage = async (req, res, next) => {
       scheduler: getSchedulerStatus(),
     });
   } catch (error) {
+    next(error);
+  }
+};
+
+export const getParticipantLogo = async (req, res, next) => {
+  try {
+    const participantId = String(req.params.participantId || "").replace(
+      /\D/g,
+      ""
+    );
+    if (!participantId) {
+      return res.status(400).json({ message: "Invalid participant" });
+    }
+
+    const result = await fetchOddsApiIoParticipantLogo(participantId);
+    if (!result?.buffer) {
+      return res.status(404).end();
+    }
+
+    res.set("Content-Type", result.contentType || "image/png");
+    res.set("Cache-Control", "public, max-age=86400");
+    return res.send(result.buffer);
+  } catch (error) {
+    if (/ODDS_API_IO_KEY is not configured/i.test(error.message || "")) {
+      return res.status(404).end();
+    }
     next(error);
   }
 };

@@ -62,4 +62,25 @@ const headerOverride = evaluateBudget({
 assert.equal(headerOverride.allowed, false);
 assert.equal(headerOverride.effectiveUsed, 460);
 
+// Leftover provider credits still allow live odds, even if used > local ceiling.
+const leftover = evaluateBudget({
+  usage: { creditsUsed: 12, usedReported: 480, remainingReported: 18 },
+  estimatedCost: 2,
+  budget: 500,
+  reserve: 50,
+  purpose: "odds",
+});
+assert.equal(leftover.allowed, true);
+
+assert.equal(
+  evaluateBudget({
+    usage: { creditsUsed: 12, usedReported: 500, remainingReported: 0 },
+    estimatedCost: 2,
+    budget: 500,
+    reserve: 50,
+    purpose: "odds",
+  }).reason,
+  "provider-credits-exhausted"
+);
+
 console.log("Sportsbook budget guard test passed");

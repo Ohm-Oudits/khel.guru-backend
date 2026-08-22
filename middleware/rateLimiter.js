@@ -74,8 +74,18 @@ class RateLimiter {
 
 const rateLimiter = new RateLimiter();
 
+const isSportsBoardRead = (req) => {
+  if (req.method !== "GET") return false;
+  const path = String(req.originalUrl || req.path || "").split("?")[0];
+  return /^\/api\/sports\/(events|catalog|participants\/[^/]+\/logo)(\/|$)/.test(
+    path
+  );
+};
+
 // General rate limiter middleware
 export const apiLimiter = (req, res, next) => {
+  if (isSportsBoardRead(req)) return next();
+
   const identifier = req.ip;
   const result = rateLimiter.isAllowed(identifier);
 

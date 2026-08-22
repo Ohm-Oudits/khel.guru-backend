@@ -129,6 +129,7 @@ const { getSportsbookEvents } = await import("../controllers/sportsbook.controll
 
 const makeRes = () => {
   const res = { statusCode: 200 };
+  res.set = () => res;
   res.status = (code) => {
     res.statusCode = code;
     return res;
@@ -160,6 +161,279 @@ assert.equal(
 );
 assert.equal(hydratedEvent.markets[0].latestOdds[0].signature, undefined);
 console.log("hydrated events endpoint embeds markets and prices in one query");
+
+const exchangeFeed = [
+  {
+    provider: "the-odds-api",
+    providerEventId: "exchange-vs-book-001",
+    sportKey: "cricket_test_match",
+    sportName: "Cricket",
+    leagueName: "Test Matches",
+    status: "upcoming",
+    startTime: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
+    competitors: [
+      { name: "Australia", role: "away" },
+      { name: "Bangladesh", role: "home" },
+    ],
+    markets: [
+      {
+        providerMarketKey: "h2h",
+        marketType: "h2h",
+        title: "Match Winner",
+        selections: [
+          { key: "australia", name: "Australia" },
+          { key: "draw", name: "Draw" },
+          { key: "bangladesh", name: "Bangladesh" },
+        ],
+        snapshots: [
+          {
+            bookmakerKey: "betfair_ex_uk",
+            bookmakerTitle: "Betfair",
+            region: "uk",
+            capturedAt: new Date().toISOString(),
+            outcomes: [
+              { key: "australia", name: "Australia", priceDecimal: 1.02 },
+              { key: "draw", name: "Draw", priceDecimal: 660 },
+              { key: "bangladesh", name: "Bangladesh", priceDecimal: 46 },
+            ],
+          },
+          {
+            bookmakerKey: "betfair_ex_au",
+            bookmakerTitle: "Betfair AU",
+            region: "au",
+            capturedAt: new Date().toISOString(),
+            outcomes: [
+              { key: "australia", name: "Australia", priceDecimal: 1.03 },
+              { key: "draw", name: "Draw", priceDecimal: 750 },
+              { key: "bangladesh", name: "Bangladesh", priceDecimal: 30 },
+            ],
+          },
+          {
+            bookmakerKey: "coral",
+            bookmakerTitle: "Coral",
+            region: "uk",
+            capturedAt: new Date().toISOString(),
+            outcomes: [
+              { key: "australia", name: "Australia", priceDecimal: 1.65 },
+              { key: "draw", name: "Draw", priceDecimal: 2.9 },
+              { key: "bangladesh", name: "Bangladesh", priceDecimal: 8 },
+            ],
+          },
+        ],
+      },
+    ],
+  },
+];
+
+const exchangeResult = await ingestNormalizedSportsbookFeed(exchangeFeed);
+assert.equal(exchangeResult.events.length, 1);
+const exchangeMarket = await Market.findOne({
+  eventId: exchangeResult.events[0]._id,
+  providerMarketKey: "h2h",
+}).lean();
+assert.equal(
+  exchangeMarket.selections.find((selection) => selection.key === "australia")
+    .priceDecimal,
+  1.03,
+  "best back is MAX across exchanges"
+);
+assert.equal(
+  exchangeMarket.selections.find((selection) => selection.key === "bangladesh")
+    .priceDecimal,
+  46
+);
+assert.equal(
+  exchangeMarket.selections.find((selection) => selection.key === "draw")
+    .priceDecimal,
+  750
+);
+console.log("best exchange back is MAX, not a sportsbook price");
+
+const houseFeed = [
+  {
+    provider: "mock",
+    providerEventId: "live-cricket-ban-aus-test",
+    sportKey: "cricket_test_match",
+    sportName: "Cricket",
+    leagueName: "2nd Test",
+    status: "live",
+    startTime: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+    competitors: [
+      { name: "Bangladesh", shortName: "BAN", role: "home" },
+      { name: "Australia", shortName: "AUS", role: "away" },
+    ],
+    markets: [
+      {
+        providerMarketKey: "h2h",
+        marketType: "h2h",
+        title: "Match Winner",
+        selections: [
+          { key: "bangladesh", name: "Bangladesh" },
+          { key: "draw", name: "Draw" },
+          { key: "australia", name: "Australia" },
+        ],
+        snapshots: [
+          {
+            bookmakerKey: "mockbook",
+            bookmakerTitle: "Mockbook",
+            region: "in",
+            capturedAt: new Date().toISOString(),
+            outcomes: [
+              { key: "bangladesh", name: "Bangladesh", priceDecimal: 7.5 },
+              { key: "draw", name: "Draw", priceDecimal: 3.0 },
+              { key: "australia", name: "Australia", priceDecimal: 1.65 },
+            ],
+          },
+        ],
+      },
+    ],
+  },
+];
+
+await ingestNormalizedSportsbookFeed(houseFeed);
+
+const oddsOntoHouse = [
+  {
+    provider: "the-odds-api",
+    providerEventId: "odds-ban-aus",
+    sportKey: "cricket_test_match",
+    sportName: "Cricket",
+    leagueName: "Test Matches",
+    status: "live",
+    startTime: new Date().toISOString(),
+    competitors: [
+      { name: "Bangladesh", shortName: "BAN", role: "home" },
+      { name: "Australia", shortName: "AUS", role: "away" },
+    ],
+    markets: [
+      {
+        providerMarketKey: "h2h",
+        marketType: "h2h",
+        title: "Match Winner",
+        selections: [
+          { key: "australia", name: "Australia" },
+          { key: "draw", name: "Draw" },
+          { key: "bangladesh", name: "Bangladesh" },
+        ],
+        snapshots: [
+          {
+            bookmakerKey: "betfair_ex_uk",
+            bookmakerTitle: "Betfair",
+            region: "uk",
+            capturedAt: new Date().toISOString(),
+            outcomes: [
+              { key: "australia", name: "Australia", priceDecimal: 1.03 },
+              { key: "bangladesh", name: "Bangladesh", priceDecimal: 34 },
+              { key: "draw", name: "Draw", priceDecimal: 750 },
+            ],
+          },
+          {
+            bookmakerKey: "paddypower",
+            bookmakerTitle: "Paddy Power",
+            region: "uk",
+            capturedAt: new Date().toISOString(),
+            outcomes: [
+              { key: "australia", name: "Australia", priceDecimal: 1.02 },
+              { key: "bangladesh", name: "Bangladesh", priceDecimal: 26 },
+              { key: "draw", name: "Draw", priceDecimal: 126 },
+            ],
+          },
+        ],
+      },
+    ],
+  },
+];
+
+const merged = await ingestNormalizedSportsbookFeed(oddsOntoHouse);
+assert.equal(merged.events[0].provider, "mock", "Odds API should attach to the house event");
+const mergedMarket = await Market.findOne({
+  eventId: merged.events[0]._id,
+  providerMarketKey: "h2h",
+}).lean();
+assert.equal(
+  mergedMarket.selections.find((selection) => selection.key === "australia")
+    .priceDecimal,
+  1.03,
+  "house mock 1.65 must not beat the best exchange back"
+);
+assert.equal(
+  mergedMarket.selections.find((selection) => selection.key === "bangladesh")
+    .priceDecimal,
+  34
+);
+assert.equal(
+  mergedMarket.selections.find((selection) => selection.key === "draw")
+    .priceDecimal,
+  750
+);
+console.log("house mock prices do not beat best exchange back");
+
+const layFeed = [
+  {
+    provider: "the-odds-api",
+    providerEventId: "exchange-lay-001",
+    sportKey: "cricket_test_match",
+    sportName: "Cricket",
+    leagueName: "Test Matches",
+    status: "upcoming",
+    startTime: new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString(),
+    competitors: [
+      { name: "Australia", role: "away" },
+      { name: "Bangladesh", role: "home" },
+    ],
+    markets: [
+      {
+        providerMarketKey: "h2h_lay",
+        marketType: "h2h",
+        title: "Match Winner Lay",
+        selections: [
+          { key: "australia", name: "Australia" },
+          { key: "bangladesh", name: "Bangladesh" },
+        ],
+        snapshots: [
+          {
+            bookmakerKey: "betfair_ex_uk",
+            bookmakerTitle: "Betfair",
+            region: "uk",
+            capturedAt: new Date().toISOString(),
+            outcomes: [
+              { key: "australia", name: "Australia", priceDecimal: 1.05 },
+              { key: "bangladesh", name: "Bangladesh", priceDecimal: 36 },
+            ],
+          },
+          {
+            bookmakerKey: "betfair_ex_au",
+            bookmakerTitle: "Betfair AU",
+            region: "au",
+            capturedAt: new Date().toISOString(),
+            outcomes: [
+              { key: "australia", name: "Australia", priceDecimal: 1.04 },
+              { key: "bangladesh", name: "Bangladesh", priceDecimal: 38 },
+            ],
+          },
+        ],
+      },
+    ],
+  },
+];
+
+const layResult = await ingestNormalizedSportsbookFeed(layFeed);
+const layMarket = await Market.findOne({
+  eventId: layResult.events[0]._id,
+  providerMarketKey: "h2h_lay",
+}).lean();
+assert.equal(
+  layMarket.selections.find((selection) => selection.key === "australia")
+    .priceDecimal,
+  1.04,
+  "best lay is MIN across exchanges"
+);
+assert.equal(
+  layMarket.selections.find((selection) => selection.key === "bangladesh")
+    .priceDecimal,
+  36
+);
+console.log("best exchange lay is MIN");
 
 await mongoose.disconnect();
 await mongod.stop();

@@ -13,6 +13,9 @@ const MARKET_TITLE_MAP = {
 export const normalizeSelectionKey = (name, line = null) =>
   `${String(name).toLowerCase().replace(/[^a-z0-9]+/g, "_")}${line !== null ? `_${line}` : ""}`;
 
+// Exchange lay books (Betfair/Matchbook) are not match-winner prices.
+export const isLayMarketKey = (key = "") => /_lay$/i.test(String(key));
+
 const toNumberOrNull = (value) => {
   const parsed = Number.parseFloat(value);
   return Number.isFinite(parsed) ? parsed : null;
@@ -36,6 +39,8 @@ export const mapTheOddsApiOddsResponse = (events, sportKey, regions = "") =>
 
     for (const bookmaker of event.bookmakers || []) {
       for (const market of bookmaker.markets || []) {
+        if (isLayMarketKey(market.key)) continue;
+
         const existing = marketMap.get(market.key) || {
           providerMarketKey: market.key,
           marketType: ["h2h", "spreads", "totals", "outrights"].includes(
@@ -104,6 +109,23 @@ export const mapTheOddsApiOddsResponse = (events, sportKey, regions = "") =>
 
 // Scores rows resolve home/away by matching score names against the event's
 // own home_team/away_team fields — same API, names are consistent.
+export const parseOddsApiScoreCell = (value) => {
+  const text = String(value ?? "").trim();
+  const cricket = text.match(/^(\d+(?:\.\d+)?)(?:\s*[-\/]\s*(\d+))?$/);
+  if (!cricket) {
+    const numeric = Number(text);
+    return {
+      runs: Number.isFinite(numeric) ? numeric : null,
+      wickets: null,
+    };
+  }
+
+  return {
+    runs: Number(cricket[1]),
+    wickets: cricket[2] !== undefined ? Number(cricket[2]) : null,
+  };
+};
+
 export const mapTheOddsApiScoresResponse = (games = []) =>
   games.map((game) => {
     let scoreboard = null;
@@ -111,20 +133,30 @@ export const mapTheOddsApiScoresResponse = (games = []) =>
     if (Array.isArray(game.scores)) {
       const scoreFor = (team) => {
         const row = game.scores.find((entry) => entry.name === team);
-        const value = row ? Number(row.score) : NaN;
-        return Number.isFinite(value) ? value : null;
+        return parseOddsApiScoreCell(row?.score);
       };
 
       const home = scoreFor(game.home_team);
       const away = scoreFor(game.away_team);
 
-      if (home !== null && away !== null) {
-        scoreboard = { home, away, completed: Boolean(game.completed) };
+      if (home.runs !== null || away.runs !== null) {
+        scoreboard = {
+          home: home.runs,
+          away: away.runs,
+          completed: Boolean(game.completed),
+        };
+        if (home.wickets !== null) scoreboard.homeWickets = home.wickets;
+        if (away.wickets !== null) scoreboard.awayWickets = away.wickets;
       }
     }
 
     return {
       providerEventId: game.id,
+      sportKey: game.sport_key || "",
+      competitors: [
+        { name: game.home_team, role: "home" },
+        { name: game.away_team, role: "away" },
+      ],
       completed: Boolean(game.completed),
       scoreboard,
       lastUpdate: game.last_update || null,
@@ -155,11 +187,22 @@ export const fetchTheOddsApiScores = async ({ sportKey, daysFrom } = {}) => {
   };
 };
 
-export const fetchTheOddsApiSports = async () => {
+const SPORTS_LIST_TTL_MS = 15 * 60 * 1000;
+let sportsListCache = { at: 0, data: null };
+
+export const fetchTheOddsApiSports = async ({ force = false } = {}) => {
   const apiKey = process.env.THE_ODDS_API_KEY;
 
   if (!apiKey) {
     throw new Error("THE_ODDS_API_KEY is not configured");
+  }
+
+  if (
+    !force &&
+    sportsListCache.data &&
+    Date.now() - sportsListCache.at < SPORTS_LIST_TTL_MS
+  ) {
+    return sportsListCache.data;
   }
 
   const response = await axios.get(`${THE_ODDS_API_BASE_URL}/sports`, {
@@ -168,6 +211,7 @@ export const fetchTheOddsApiSports = async () => {
     },
   });
 
+  sportsListCache = { at: Date.now(), data: response.data };
   return response.data;
 };
 
